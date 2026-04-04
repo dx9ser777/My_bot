@@ -1,4 +1,4 @@
 aiogram==2.25.1
-aiohttp
-asyncio
+aiohttp==3.8.5
+
 
