@@ -10,12 +10,16 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 # --- КОНФИГУРАЦИЯ ---
 API_TOKEN = os.getenv('BOT_TOKEN', '8607818846:AAEjGMfOMw8JmUsXu8Zj5mUdzfP1RylLVjU')
-START_ADMINS = [8137882829, 6332767725, 6848243673]
+START_ADMINS = [8137882829, 6332767725, 6848243673] # Твой ID должен быть тут
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
+
+class Form(StatesGroup):
+    k_name = State(); k_days = State(); k_uses = State()
+    p_name = State(); p_type = State(); p_val = State()
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -34,11 +38,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-class Form(StatesGroup):
-    k_name = State(); k_days = State(); k_uses = State()
-    p_name = State(); p_type = State(); p_val = State()
-    mail = State()
-
 def is_admin(uid):
     conn = sqlite3.connect("database.db")
     res = conn.execute("SELECT id FROM admins WHERE id=?", (uid,)).fetchone()
@@ -50,47 +49,102 @@ def get_u(uid, username=None):
     cur = conn.cursor()
     cur.execute("INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)", (uid, f"@{username}" if username else "N/A"))
     conn.commit()
-    user = cur.execute("SELECT * @username FROM users WHERE id=?", (uid,)).fetchone()
+    user = cur.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
     return user
 
-# --- ОБРАБОТКА КОМАНД ---
+# --- КОМАНДЫ ---
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     await message.answer("🚀 **DX9WARE запущен!**\nОтправь мне ключ или промокод для активации.", parse_mode="Markdown")
 
 @dp.message_handler(commands=['admin'])
 async def cmd_admin(message: types.Message):
-    if is_admin(message.from_user.id):
-        markup = types.InlineKeyboardMarkup().add(
-            types.InlineKeyboardButton("➕ Ключ", callback_data="adm_add_key"),
-            types.InlineKeyboardButton("🎁 Промо", callback_data="adm_add_promo")
-        )
-        await message.answer("🛠 Админ-панель:", reply_markup=markup)
+    if not is_admin(message.from_user.id): return
+    markup = types.InlineKeyboardMarkup().add(
+        types.InlineKeyboardButton("➕ Создать ключ", callback_data="adm_add_key"),
+        types.InlineKeyboardButton("🎁 Создать промо", callback_data="adm_add_promo")
+    )
+    await message.answer("🛠 **Админ-панель:**", reply_markup=markup)
 
-# --- ГЛОБАЛЬНЫЙ ОБРАБОТЧИК (С ДЕБАГОМ) ---
+# --- ЛОГИКА СОЗДАНИЯ КЛЮЧА (FSM) ---
+@dp.callback_query_handler(lambda c: c.data == "adm_add_key")
+async def add_key_step1(call: types.CallbackQuery):
+    await Form.k_name.set()
+    await call.message.answer("Введите название ключа (например `FREE-123`):")
+
+@dp.message_handler(state=Form.k_name)
+async def add_key_step2(message: types.Message, state: FSMContext):
+    await state.update_data(kname=message.text.strip())
+    await Form.k_days.set()
+    await message.answer("На сколько дней ключ?")
+
+@dp.message_handler(state=Form.k_days)
+async def add_key_step3(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Введи число!")
+    await state.update_data(kdays=int(message.text))
+    await Form.k_uses.set()
+    await message.answer("Сколько активаций у ключа?")
+
+@dp.message_handler(state=Form.k_uses)
+async def add_key_step4(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Введи число!")
+    data = await state.get_data()
+    conn = sqlite3.connect("database.db")
+    conn.execute("INSERT INTO keys (key, days, max_uses) VALUES (?, ?, ?)", 
+                 (data['kname'], data['kdays'], int(message.text)))
+    conn.commit()
+    conn.close()
+    await message.answer(f"✅ Ключ `{data['kname']}` создан!")
+    await state.finish()
+
+# --- ОБРАБОТЧИК ТЕКСТА (АКТИВАЦИЯ) ---
 @dp.message_handler()
-async def global_handler(message: types.Message):
+async def universal_handler(message: types.Message):
     uid = message.from_user.id
     text = message.text.strip()
-    
-    # Если бот видит это сообщение, он ответит в логи Amvera
-    logging.info(f"Получено сообщение от {uid}: {text}")
-
     u = get_u(uid, message.from_user.username)
-    if u and u[6] == 1: # Поле is_blocked
-        return await message.answer("🚫 Доступ заблокирован администратором.")
+    
+    if u[6] == 1: return await message.answer("🚫 Ты заблокирован.")
 
-    # Логика проверки ключа/промо (как в прошлых версиях)
-    # ... (код активации здесь) ...
-    await message.answer(f"🔎 Проверяю код: `{text}`...", parse_mode="Markdown")
+    conn = sqlite3.connect("database.db")
+    cur = conn.cursor()
 
-# --- ЗАПУСК ---
+    # Ищем в ключах
+    cur.execute("SELECT * FROM keys WHERE key=?", (text,))
+    k = cur.fetchone()
+    if k:
+        if k[3] < k[2]: # used_count < max_uses
+            end_date = (datetime.now() + timedelta(days=k[1])).strftime("%Y-%m-%d")
+            cur.execute("UPDATE users SET active_until=?, current_key=? WHERE id=?", (end_date, text, uid))
+            cur.execute("UPDATE keys SET used_count=used_count+1 WHERE key=?", (text,))
+            conn.commit()
+            await message.answer(f"✅ Доступ активирован до: `{end_date}`", parse_mode="Markdown")
+        else:
+            await message.answer("❌ У этого ключа закончились активации.")
+        conn.close()
+        return
+
+    # Ищем в промокодах
+    cur.execute("SELECT * FROM promos WHERE code=?", (text,))
+    p = cur.fetchone()
+    if p:
+        if p[1] == 'days':
+            end_date = (datetime.now() + timedelta(days=p[2])).strftime("%Y-%m-%d")
+            cur.execute("UPDATE users SET active_until=? WHERE id=?", (end_date, uid))
+            await message.answer(f"🎁 Промокод на {p[2]}д. активирован!")
+        cur.execute("DELETE FROM promos WHERE code=?", (text,))
+        conn.commit()
+        conn.close()
+        return
+
+    await message.answer("⚠️ Код не найден или неверный.")
+    conn.close()
+
 async def on_startup(dp):
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Бот успешно авторизован и готов к работе!")
 
 if __name__ == '__main__':
     init_db()
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
-        
+    
