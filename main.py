@@ -7,206 +7,160 @@ from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiocryptopay import CryptoPay
 
 # --- КОНФИГУРАЦИЯ ---
-API_TOKEN = os.getenv('BOT_TOKEN', '8607818846:AAEjGMfOMw8JmUsXu8Zj5mUdzfP1RylLVjU')
+API_TOKEN = '8607818846:AAEjGMfOMw8JmUsXu8Zj5mUdzfP1RylLVjU'
 CRYPTO_TOKEN = '560149:AAdisc69jC2qejfxQvAD5y56K4Jx1oBn9f1'
 START_ADMINS = [8137882829, 6332767725, 6848243673]
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
+crypto = CryptoPay(CRYPTO_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-class AdminStates(StatesGroup):
-    # Промо
-    p_code = State(); p_type = State(); p_value = State()
-    # Рассылка
-    broadcast = State()
-    # Управление ключами
-    remove_target = State()
+class Form(StatesGroup):
+    promo_code = State(); promo_type = State(); promo_value = State()
+    key_name = State(); key_days = State(); key_uses = State()
+    edit_key_name = State(); edit_key_val = State() # Для смены лимита
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect("database.db")
     cur = conn.cursor()
-    # Таблица юзеров с поддержкой заморозки и скидок
     cur.execute('''CREATE TABLE IF NOT EXISTS users 
                    (id INTEGER PRIMARY KEY, username TEXT, active_until TEXT, 
-                    current_key TEXT, is_blocked INTEGER DEFAULT 0, is_frozen INTEGER DEFAULT 0,
-                    discount INTEGER DEFAULT 0)''')
+                    is_frozen INTEGER DEFAULT 0, current_key TEXT, access_blocked INTEGER DEFAULT 0)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS keys 
-                   (key TEXT PRIMARY KEY, days INTEGER, max_uses INTEGER, used_count INTEGER DEFAULT 0, status TEXT DEFAULT 'active')''')
+                   (key TEXT PRIMARY KEY, days INTEGER, max_uses INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS promos 
-                   (code TEXT PRIMARY KEY, type TEXT, value INTEGER)''')
+                   (code TEXT PRIMARY KEY, type TEXT, value TEXT)''')
     conn.commit()
     conn.close()
+
+init_db()
+
+def is_admin(uid): return uid in START_ADMINS
 
 # --- КЛАВИАТУРЫ ---
-def get_main_menu():
+def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("👤 Профиль", "🔑 Активировать ключ", "🎁 Ввести промо", "🛒 Товары")
+    markup.add("👤 Профиль", "🔑 Активация", "🎁 Промо", "🛒 Товары")
+    markup.add("📢 Канал", "💬 Отзывы", "🆘 Поддержка")
     return markup
 
-def get_admin_menu():
+# --- АДМИН КОМАНДЫ ЗАМОРОЗКИ ---
+@dp.message_handler(commands=['freeze'])
+async def admin_freeze(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    target_id = None
+    if message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+    else:
+        args = message.get_args()
+        if args.isdigit(): target_id = int(args)
+    
+    if target_id:
+        conn = sqlite3.connect("database.db")
+        conn.execute("UPDATE users SET is_frozen = 1 WHERE id = ?", (target_id,))
+        conn.commit(); conn.close()
+        await message.answer(f"❄️ Пользователь `{target_id}` успешно заморожен.", parse_mode="Markdown")
+    else:
+        await message.answer("⚠️ Ответь на сообщение пользователя или введи его ID: `/freeze 12345`")
+
+@dp.message_handler(commands=['unfreeze'])
+async def admin_unfreeze(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    args = message.get_args()
+    if args.isdigit():
+        conn = sqlite3.connect("database.db")
+        conn.execute("UPDATE users SET is_frozen = 0 WHERE id = ?", (int(args),))
+        conn.commit(); conn.close()
+        await message.answer(f"🔥 Пользователь `{args}` разморожен.")
+
+# --- АДМИН ПАНЕЛЬ ---
+@dp.message_handler(commands=['admin'])
+async def admin_main(message: types.Message):
+    if not is_admin(message.from_user.id): return
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("🎁 Добавить промо", callback_data="adm_promo"),
-        types.InlineKeyboardButton("📢 Рассылка", callback_data="adm_broadcast"),
-        types.InlineKeyboardButton("❄️ Заморозка", callback_data="adm_freeze_list"),
-        types.InlineKeyboardButton("📊 Проверить ключи", callback_data="adm_check_keys")
+        types.InlineKeyboardButton("🔑 Создать ключ", callback_data="adm_key"),
+        types.InlineKeyboardButton("⚙️ Изменить лимит", callback_data="adm_edit_limit"),
+        types.InlineKeyboardButton("📊 Статистика ключей", callback_data="adm_check"),
+        types.InlineKeyboardButton("📢 Рассылка", callback_data="adm_mail")
     )
-    return markup
+    await message.answer("🛠 **Админ-меню**", reply_markup=markup, parse_mode="Markdown")
 
-# --- ХЕНДЛЕРЫ ПОЛЬЗОВАТЕЛЯ ---
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
-    await message.answer(f"💜 **Welcome @{message.from_user.username} to Luci4DX9**", 
-                         reply_markup=get_main_menu(), parse_mode="Markdown")
+# Логика изменения лимита активаций
+@dp.callback_query_handler(lambda c: c.data == "adm_edit_limit")
+async def edit_limit_1(call: types.CallbackQuery):
+    await Form.edit_key_name.set()
+    await call.message.answer("⌨️ Введите название ключа, лимит которого хотите изменить:")
 
-@dp.message_handler(lambda m: m.text == "👤 Профиль" or m.text == "/профиль")
-async def view_profile(message: types.Message):
-    conn = sqlite3.connect("database.db")
-    u = conn.execute("SELECT * FROM users WHERE id=?", (message.from_user.id,)).fetchone()
-    conn.close()
-    
-    uid = message.from_user.id
-    if not u or not u[2]:
-        text = f"👤 **Профиль**\n🆔 ID: `{uid}`\n🔑 Ключ: **не активирован**"
-    else:
-        text = f"👤 **Профиль**\n🆔 ID: `{uid}`\n🔑 Ключ: `{u[3]}`\n📅 Истекает: `{u[2]}`"
-    
-    await message.answer(text, parse_mode="Markdown")
+@dp.message_handler(state=Form.edit_key_name)
+async def edit_limit_2(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await Form.edit_key_val.set()
+    await message.answer("🔢 Введите новое кол-во активаций (число):")
 
-@dp.message_handler(lambda m: m.text == "🛒 Товары")
-async def show_shop(message: types.Message):
-    shop_text = (
-        "🛒 **Магазин DX9WARE**\n\n"
-        "🤖 **APK (Android)**\n"
-        "├ 7 days: 350⭐️ / 4 USDT\n"
-        "└ Month: 700⭐️ / 8 USDT\n\n"
-        "🍎 **IOS**\n"
-        "├ 7 days: 400⭐️ / 6 USDT\n"
-        "└ Month: 800⭐️ / 12 USDT\n\n"
-        "⚠️ Комиссия на вас.\n"
-        "📢 Канал: [Luci4DX9](https://t.me/Luci4DX9)\n"
-        "💬 Отзывы: [cultDX9reviews](https://t.me/cultDX9reviews)\n\n"
-        "Для оплаты звёздами пиши: @Luci4Ware\n"
-        "Для крипты: @ware4"
-    )
-    await message.answer(shop_text, parse_mode="Markdown", disable_web_page_preview=True)
-
-# --- АДМИН-КОМАНДЫ (ГРУППЫ И ОТВЕТЫ) ---
-@dp.message_handler(commands=['Aprofile'])
-async def admin_profile(message: types.Message):
-    if not (message.from_user.id in START_ADMINS): return
-    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
-    conn = sqlite3.connect("database.db")
-    u = conn.execute("SELECT * FROM users WHERE id=?", (target.id,)).fetchone()
-    conn.close()
-    await message.answer(f"🛠 **Админ-инфо {target.mention}:**\nID: `{target.id}`\nКлюч: `{u[3] if u else 'N/A'}`", parse_mode="Markdown")
-
-@dp.message_handler(commands=['remove_key'])
-async def remove_key_cmd(message: types.Message):
-    if not (message.from_user.id in START_ADMINS): return
-    key_to_del = message.get_args()
-    conn = sqlite3.connect("database.db")
-    conn.execute("UPDATE users SET active_until=NULL, current_key=NULL WHERE current_key=?", (key_to_del,))
-    conn.commit()
-    conn.close()
-    await message.answer(f"✅ Ключ `{key_to_del}` отвязан от всех пользователей.")
-
-# --- ЛОГИКА ПРОМОКОДОВ ---
-@dp.callback_query_handler(lambda c: c.data == "adm_promo")
-async def adm_promo_start(call: types.CallbackQuery):
-    await AdminStates.p_code.set()
-    await call.message.answer("Введите текст промокода:")
-
-@dp.message_handler(state=AdminStates.p_code)
-async def adm_promo_type(message: types.Message, state: FSMContext):
-    await state.update_data(code=message.text)
-    markup = types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("Скидка (%)", callback_data="pt_disc"),
-        types.InlineKeyboardButton("Временный ключ", callback_data="pt_days")
-    )
-    await message.answer("На что будет промо?", reply_markup=markup)
-    await AdminStates.p_type.set()
-
-@dp.callback_query_handler(state=AdminStates.p_type)
-async def adm_promo_val_step(call: types.CallbackQuery, state: FSMContext):
-    p_type = 'discount' if call.data == "pt_disc" else 'days'
-    await state.update_data(type=p_type)
-    await call.message.answer("Введите значение (число):")
-    await AdminStates.p_value.set()
-
-@dp.message_handler(state=AdminStates.p_value)
-async def adm_promo_finish(message: types.Message, state: FSMContext):
+@dp.message_handler(state=Form.edit_key_val)
+async def edit_limit_3(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Введите число!")
     data = await state.get_data()
     conn = sqlite3.connect("database.db")
-    conn.execute("INSERT INTO promos (code, type, value) VALUES (?, ?, ?)", 
-                 (data['code'], data['type'], int(message.text)))
-    conn.commit()
-    conn.close()
-    await message.answer(f"✅ Промо `{data['code']}` создано!")
+    conn.execute("UPDATE keys SET max_uses = ? WHERE key = ?", (int(message.text), data['name']))
+    conn.commit(); conn.close()
+    await message.answer(f"✅ Лимит ключа `{data['name']}` изменен на {message.text}")
     await state.finish()
 
-# --- РАССЫЛКА ---
-@dp.callback_query_handler(lambda c: c.data == "adm_broadcast")
-async def broadcast_start(call: types.CallbackQuery):
-    await AdminStates.broadcast.set()
-    await call.message.answer("Введите текст рассылки:")
-
-@dp.message_handler(state=AdminStates.broadcast)
-async def broadcast_exec(message: types.Message, state: FSMContext):
-    conn = sqlite3.connect("database.db")
-    users = conn.execute("SELECT id FROM users").fetchall()
-    conn.close()
-    count = 0
-    for u in users:
-        try:
-            await bot.send_message(u[0], message.text)
-            count += 1
-        except: continue
-    await message.answer(f"📢 Рассылка завершена. Получили: {count} чел.")
-    await state.finish()
-
-# --- ПРОЧИЕ ФУНКЦИИ ---
-@dp.message_handler(lambda m: m.text == "🎁 Ввести промо")
-async def user_promo(message: types.Message):
-    await message.answer("Введите ваш промокод:")
-
+# --- ОБРАБОТКА АКТИВАЦИИ ---
 @dp.message_handler()
-async def global_text_handler(message: types.Message):
+async def global_handler(message: types.Message):
     text = message.text.strip()
     uid = message.from_user.id
     
-    conn = sqlite3.connect("database.db")
-    cur = conn.cursor()
-    
-    # Проверка на промокод
-    cur.execute("SELECT * FROM promos WHERE code=?", (text,))
-    p = cur.fetchone()
-    if p:
-        if p[1] == 'discount':
-            cur.execute("UPDATE users SET discount=? WHERE id=?", (p[2], uid))
-            await message.answer(f"✅ Активирована скидка {p[2]}% на следующую покупку!")
-        else:
-            end = (datetime.now() + timedelta(days=p[2])).strftime("%Y-%m-%d")
-            cur.execute("UPDATE users SET active_until=? WHERE id=?", (end, uid))
-            await message.answer(f"✅ Получен временный доступ до `{end}`")
-        cur.execute("DELETE FROM promos WHERE code=?", (text,))
-        conn.commit()
+    # Кнопки меню
+    if text == "👤 Профиль":
+        conn = sqlite3.connect("database.db")
+        u = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         conn.close()
+        status = "❄️ ЗАМОРОЖЕН" if u and u[3] else (f"✅ До `{u[2]}`" if u and u[2] else "❌ Не активирован")
+        await message.answer(f"👤 **Профиль**\nID: `{uid}`\nКлюч: `{u[4] if u else 'нет'}`\nСтатус: {status}", parse_mode="Markdown")
         return
 
-    # Логика активации ключа (как раньше)
-    # ...
+    if text == "🛒 Товары":
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🤖 Android", callback_data="buy_and"), types.InlineKeyboardButton("🍎 iOS", callback_data="buy_ios"))
+        await message.answer("🛒 Выберите платформу:", reply_markup=markup); return
+
+    if text == "🆘 Поддержка":
+        await message.answer("🆘 Поддержка: @WareSupport"); return
+
+    # Логика ключей
+    conn = sqlite3.connect("database.db")
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM keys WHERE key=?", (text,))
+    k = cur.fetchone()
+    
+    if k:
+        # Проверка: не использовал ли уже КТО-ТО ДРУГОЙ этот ключ (если лимит 1)
+        if k[3] >= k[2]:
+            await message.answer("❌ Лимит активаций этого ключа исчерпан или он уже привязан к другому аккаунту.")
+        else:
+            # Активируем
+            end = (datetime.now() + timedelta(days=k[1])).strftime("%Y-%m-%d")
+            cur.execute("INSERT OR REPLACE INTO users (id, username, active_until, current_key, is_frozen) VALUES (?, ?, ?, ?, 0)", 
+                        (uid, message.from_user.username, end, text))
+            cur.execute("UPDATE keys SET used_count = used_count + 1 WHERE key = ?", (text,))
+            conn.commit()
+            await message.answer(f"🚀 **Успешно!**\nКлюч активирован до: `{end}`", parse_mode="Markdown")
+    else:
+        # Если это не команда и не ключ - молчим или даем подсказку
+        if not text.startswith('/'):
+            await message.answer("⚠️ Код не найден. Используйте кнопки меню.")
+    
     conn.close()
 
-async def on_startup(_):
-    await bot.delete_webhook(drop_pending_updates=True)
-
 if __name__ == '__main__':
-    init_db()
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    executor.start_polling(dp, skip_updates=True)
     
