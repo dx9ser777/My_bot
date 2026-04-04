@@ -16,23 +16,39 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 logging.basicConfig(level=logging.INFO)
 
-# Список активных юзеров (в идеале хранить в БД, но для начала пойдет так)
 active_users = set()
 
-# Цены в USDT (согласно твоему прайсу)
 PRICES = {
     "apk_7": 4, "apk_30": 8,
     "ios_7": 6, "ios_30": 12
 }
 
-# --- ФУНКЦИИ CRYPTO PAY API ---
+# --- ЛОГИКА ВЫДАЧИ КЛЮЧА ---
+def extract_one_key():
+    paths = ["keys.txt", "/data/keys.txt", "data/keys.txt"]
+    for path in paths:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            
+            if not lines:
+                return None
+            
+            # Берем первый ключ и убираем его из списка
+            key_to_give = lines[0].strip()
+            remaining_keys = lines[1:]
+            
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(remaining_keys)
+            
+            return key_to_give
+    return None
+
 async def create_invoice(amount):
     headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
     data = {
-        'asset': 'USDT',
-        'amount': str(amount),
-        'description': 'Оплата DX9WARE (Standoff 2)',
-        'allow_comments': False
+        'asset': 'USDT', 'amount': str(amount),
+        'description': 'Оплата DX9WARE (Standoff 2)', 'allow_comments': False
     }
     async with aiohttp.ClientSession() as session:
         async with session.post('https://pay.crypt.bot/api/createInvoice', json=data, headers=headers) as resp:
@@ -47,14 +63,6 @@ async def check_invoice(invoice_id):
             if res['ok'] and res['result']['items']:
                 return res['result']['items'][0]['status'] == 'paid'
     return False
-
-def get_keys():
-    paths = ["keys.txt", "/data/keys.txt", "data/keys.txt"]
-    for path in paths:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return [line.strip() for line in f.readlines() if line.strip()]
-    return []
 
 def get_main_menu(user_id):
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -71,10 +79,7 @@ def get_main_menu(user_id):
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    await message.answer(
-        "Привет! Это DX9WARE — лучший софт для Standoff 2. Выбери действие:", 
-        reply_markup=get_main_menu(message.from_user.id)
-    )
+    await message.answer("Добро пожаловать в DX9WARE!", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.callback_query_handler(lambda c: c.data)
 async def process_callback(callback_query: types.CallbackQuery):
@@ -91,28 +96,27 @@ async def process_callback(callback_query: types.CallbackQuery):
 
     elif callback_query.data.startswith('buy_'):
         plan = callback_query.data.replace('buy_', '')
-        amount = PRICES[plan]
-        res = await create_invoice(amount)
-        
+        res = await create_invoice(PRICES[plan])
         if res['ok']:
             pay_url = res['result']['pay_url']
             inv_id = res['result']['invoice_id']
             markup = types.InlineKeyboardMarkup(row_width=1).add(
                 types.InlineKeyboardButton("💳 Оплатить в Crypto Bot", url=pay_url),
-                types.InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_{inv_id}"),
-                types.InlineKeyboardButton("⬅️ Назад", callback_data="shop")
+                types.InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_{inv_id}")
             )
-            await bot.send_message(uid, f"Счет на {amount}$ создан. После оплаты нажмите «Проверить»:", reply_markup=markup)
-        else:
-            await bot.send_message(uid, "Ошибка Crypto Pay. Напишите в поддержку: " + SUPPORT_URL)
+            await bot.send_message(uid, f"Счет создан. После оплаты нажмите «Проверить»:", reply_markup=markup)
 
     elif callback_query.data.startswith('check_'):
         inv_id = callback_query.data.replace('check_', '')
         if await check_invoice(inv_id):
-            active_users.add(uid)
-            await bot.send_message(uid, "✅ Оплата подтверждена! Теперь вам доступна кнопка «Получить файлы».", reply_markup=get_main_menu(uid))
+            new_key = extract_one_key()
+            if new_key:
+                active_users.add(uid)
+                await bot.send_message(uid, f"✅ Оплата подтверждена!\n\nТвой ключ активации: `{new_key}`\n\nСкопируй его и нажми «Активировать ключ» в меню.", parse_mode="Markdown", reply_markup=get_main_menu(uid))
+            else:
+                await bot.send_message(uid, "❌ Оплата прошла, но ключи в базе закончились! Напиши админу: " + SUPPORT_URL)
         else:
-            await bot.answer_callback_query(callback_query.id, "Оплата не найдена. Сначала оплатите счет!", show_alert=True)
+            await bot.answer_callback_query(callback_query.id, "Оплата не найдена!", show_alert=True)
 
     elif callback_query.data == 'shop_apk':
         markup = types.InlineKeyboardMarkup(row_width=1).add(
@@ -120,7 +124,7 @@ async def process_callback(callback_query: types.CallbackQuery):
             types.InlineKeyboardButton("Купить Месяц (8$)", callback_data="buy_apk_30"),
             types.InlineKeyboardButton("⬅️ Назад", callback_data="shop")
         )
-        await bot.edit_message_text("Цены на APK (Android):", uid, callback_query.message.message_id, reply_markup=markup)
+        await bot.edit_message_text("Цены на APK:", uid, callback_query.message.message_id, reply_markup=markup)
 
     elif callback_query.data == 'shop_ios':
         markup = types.InlineKeyboardMarkup(row_width=1).add(
@@ -138,29 +142,9 @@ async def process_callback(callback_query: types.CallbackQuery):
         
     elif callback_query.data == 'profile':
         has_key = "Активен ✅" if uid in active_users else "нет ключа ❌"
-        end_time = "неизвестно" if uid in active_users else "—"
-        await bot.send_message(uid, f"👤 ID: `{uid}`\n🔑 Ключ: {has_key}\n⏳ Закончится: {end_time}", parse_mode="Markdown")
+        await bot.send_message(uid, f"👤 ID: `{uid}`\n🔑 Ключ: {has_key}", parse_mode="Markdown")
         
     elif callback_query.data == 'get_files':
         if uid in active_users:
-            if os.path.exists(FILE_NAME):
-                with open(FILE_NAME, 'rb') as f:
-                    await bot.send_document(uid, f, caption="Твои файлы DX9WARE.")
-            else:
-                await bot.send_message(uid, "Файл еще не загружен на сервер.")
-        else:
-            await bot.send_message(uid, "Сначала активируйте ключ.")
-            
-    await bot.answer_callback_query(callback_query.id)
-
-@dp.message_handler()
-async def check_key(message: types.Message):
-    if message.text.strip() in get_keys():
-        active_users.add(message.from_user.id)
-        await message.answer("✅ Ключ активирован!", reply_markup=get_main_menu(message.from_user.id))
-    else:
-        await message.answer("Неверный ключ")
-
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
-            
+            if os.path.exists(FILE_NAME
+    
