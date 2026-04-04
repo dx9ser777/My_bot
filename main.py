@@ -1,7 +1,6 @@
 import logging
 import sqlite3
 import os
-import asyncio
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
@@ -9,9 +8,8 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-# --- КОНФИГУРАЦИЯ (Используем переменную из Amvera) ---
-# На скриншоте у тебя BOT_TOKEN, берем его из системы
-API_TOKEN = os.getenv('BOT_TOKEN', '8607818846:AAHnoGKXL-zWEWXlh8V1BbUm9Yq1puuV_Is')
+# --- КОНФИГУРАЦИЯ ---
+API_TOKEN = os.getenv('BOT_TOKEN', '8607818846:AAEjGMfOMw8JmUsXu8Zj5mUdzfP1RylLVjU')
 START_ADMINS = [8137882829, 6332767725, 6848243673]
 
 logging.basicConfig(level=logging.INFO)
@@ -36,17 +34,63 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- ФУНКЦИЯ ДЛЯ ЧИСТКИ ПРИ ЗАПУСКЕ ---
-async def on_startup(dp):
-    # ПРИНУДИТЕЛЬНО УДАЛЯЕМ ВЕБХУК И СТАРЫЕ ОБНОВЛЕНИЯ
-    # Это решает проблему ConflictError на серверах
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Webhook deleted and updates cleared.")
+class Form(StatesGroup):
+    k_name = State(); k_days = State(); k_uses = State()
+    p_name = State(); p_type = State(); p_val = State()
+    mail = State()
 
-# (Тут должен быть остальной твой код с хендлерами /admin, /start и т.д.)
+def is_admin(uid):
+    conn = sqlite3.connect("database.db")
+    res = conn.execute("SELECT id FROM admins WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    return res is not None
+
+def get_u(uid, username=None):
+    conn = sqlite3.connect("database.db")
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)", (uid, f"@{username}" if username else "N/A"))
+    conn.commit()
+    user = cur.execute("SELECT * @username FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    return user
+
+# --- ОБРАБОТКА КОМАНД ---
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message):
+    await message.answer("🚀 **DX9WARE запущен!**\nОтправь мне ключ или промокод для активации.", parse_mode="Markdown")
+
+@dp.message_handler(commands=['admin'])
+async def cmd_admin(message: types.Message):
+    if is_admin(message.from_user.id):
+        markup = types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("➕ Ключ", callback_data="adm_add_key"),
+            types.InlineKeyboardButton("🎁 Промо", callback_data="adm_add_promo")
+        )
+        await message.answer("🛠 Админ-панель:", reply_markup=markup)
+
+# --- ГЛОБАЛЬНЫЙ ОБРАБОТЧИК (С ДЕБАГОМ) ---
+@dp.message_handler()
+async def global_handler(message: types.Message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    
+    # Если бот видит это сообщение, он ответит в логи Amvera
+    logging.info(f"Получено сообщение от {uid}: {text}")
+
+    u = get_u(uid, message.from_user.username)
+    if u and u[6] == 1: # Поле is_blocked
+        return await message.answer("🚫 Доступ заблокирован администратором.")
+
+    # Логика проверки ключа/промо (как в прошлых версиях)
+    # ... (код активации здесь) ...
+    await message.answer(f"🔎 Проверяю код: `{text}`...", parse_mode="Markdown")
+
+# --- ЗАПУСК ---
+async def on_startup(dp):
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("Бот успешно авторизован и готов к работе!")
 
 if __name__ == '__main__':
     init_db()
-    # Добавляем on_startup для очистки конфликтов
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
-    
+        
