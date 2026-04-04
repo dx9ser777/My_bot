@@ -14,6 +14,7 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 logging.basicConfig(level=logging.INFO)
 
+# Список активных юзеров в памяти
 active_users = set()
 
 def get_keys():
@@ -28,11 +29,16 @@ def get_main_menu(user_id):
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-        types.InlineKeyboardButton("🛒 Товары и Цены", callback_data="shop"),
-        types.InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate")
+        types.InlineKeyboardButton("🛒 Товары и Цены", callback_data="shop")
     )
-    if user_id in active_users:
+    
+    # ЛОГИКА: Если ключа нет — показываем кнопку активации
+    if user_id not in active_users:
+        markup.add(types.InlineKeyboardButton("🔑 Активировать ключ", callback_data="activate"))
+    # Если ключ есть — убираем активацию и показываем файлы
+    else:
         markup.add(types.InlineKeyboardButton("📁 Получить файлы", callback_data="get_files"))
+    
     markup.add(types.InlineKeyboardButton("📢 Наш канал", url=CHANNEL_URL))
     return markup
 
@@ -105,7 +111,7 @@ async def process_callback(callback_query: types.CallbackQuery):
                 with open(FILE_NAME, 'rb') as f:
                     await bot.send_document(uid, f, caption="Твои файлы готовы!")
             else:
-                await bot.send_message(uid, "Файл еще не загружен.")
+                await bot.send_message(uid, "Файл еще не загружен на сервер.")
         else:
             await bot.send_message(uid, "Сначала активируй ключ!")
             
@@ -119,7 +125,8 @@ async def check_key(message: types.Message):
     
     if user_key in valid_keys:
         active_users.add(uid)
-        await message.answer("✅ Ключ подтвержден!", reply_markup=get_main_menu(uid))
+        # При успешной активации отправляем новое меню, где кнопки активации уже нет
+        await message.answer("✅ Ключ подтвержден! Теперь скачай файлы в меню ниже.", reply_markup=get_main_menu(uid))
     else:
         await message.answer("Неверный ключ")
 
