@@ -1,37 +1,28 @@
 import logging
 import sqlite3
-import os
+import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-# --- ИСПРАВЛЕННЫЙ ИМПОРТ ---
-from aiocryptopay import AioCryptoPay 
 
-# --- КОНФИГУРАЦИЯ ---
-API_TOKEN = '8607818846:AAEjGMfOMw8JmUsXu8Zj5mUdzfP1RylLVjU'
-CRYPTO_TOKEN = '560149:AAdisc69jC2qejfxQvAD5y56K4Jx1oBn9f1'
-START_ADMINS = [8137882829, 6332767725, 6848243673]
-SUPPORT_USER = "@WareSupport"
-PAYMENT_USER = "@ware4"
-CHANNEL_URL = "https://t.me/Luci4DX9"
-REVIEWS_URL = "https://t.me/cultDX9reviews"
+# --- НАСТРОЙКИ ---
+API_TOKEN = '8607818846:AAHnoGKXL-zWEWXlh8V1BbUm9Yq1puuV_Is'
+CRYPTO_PAY_TOKEN = '560149:AAdisc69jC2qejfxQvAD5y56K4Jx1oBn9f1'
+ADMIN_IDS = [8137882829, 6332767725, 6848243673]
+PAYMENT_ADMIN = "@ware4"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-# --- ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ ---
-crypto = AioCryptoPay(token=CRYPTO_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# --- СОСТОЯНИЯ (FSM) ---
-class Form(StatesGroup):
-    key_name = State()
-    key_days = State()
-    key_uses = State()
-    delete_key_name = State()
+class AdminStates(StatesGroup):
+    wait_key_name = State()
+    wait_key_days = State()
+    wait_limit = State()
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -39,7 +30,7 @@ def init_db():
     cur = conn.cursor()
     cur.execute('''CREATE TABLE IF NOT EXISTS users 
                    (id INTEGER PRIMARY KEY, username TEXT, active_until TEXT, 
-                    is_frozen INTEGER DEFAULT 0, current_key TEXT)''')
+                    is_frozen INTEGER DEFAULT 0, current_key TEXT, banned INTEGER DEFAULT 0)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS keys 
                    (key TEXT PRIMARY KEY, days INTEGER, max_uses INTEGER DEFAULT 1, used_count INTEGER DEFAULT 0)''')
     conn.commit()
@@ -47,109 +38,133 @@ def init_db():
 
 init_db()
 
-def is_admin(uid): return uid in START_ADMINS
+def is_admin(uid): return uid in ADMIN_IDS
 
-def get_u(uid, username="N/A"):
-    conn = sqlite3.connect("database.db")
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)", (uid, f"@{username}"))
-    conn.commit()
-    user = cur.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    conn.close()
-    return user
+# --- API CRYPTO PAY (Твой рабочий метод) ---
+async def create_invoice(amount):
+    headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
+    data = {'asset': 'USDT', 'amount': str(amount), 'description': 'DX9WARE Sub'}
+    async with aiohttp.ClientSession() as session:
+        async with session.post('https://pay.crypt.bot/api/createInvoice', json=data, headers=headers) as resp:
+            return await resp.json()
 
-# --- КЛАВИАТУРЫ ---
-def main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("👤 Профиль", "🔑 Активация", "🛒 Товары")
-    markup.add("📢 Канал", "💬 Отзывы", "🆘 Поддержка")
-    return markup
+async def check_invoice(invoice_id):
+    headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
+    async with aiohttp.ClientSession() as session:
+        params = {'invoice_ids': str(invoice_id)}
+        async with session.get('https://pay.crypt.bot/api/getInvoices', params=params, headers=headers) as resp:
+            res = await resp.json()
+            if res['ok'] and res['result']['items']:
+                return res['result']['items'][0]['status'] == 'paid'
+    return False
 
-# --- КОМАНДЫ ---
-@dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    get_u(message.from_user.id, message.from_user.username)
-    await message.answer("🚀 Привет! Я бот DX9 WARE.", reply_markup=main_menu())
-
+# --- АДМИН ПАНЕЛЬ ---
 @dp.message_handler(commands=['admin'])
-async def admin_main(message: types.Message):
+async def admin_panel(message: types.Message):
     if not is_admin(message.from_user.id): return
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("🔑 Создать ключ", callback_data="adm_key"),
-        types.InlineKeyboardButton("🗑 Удалить ключ", callback_data="adm_del_key")
+        types.InlineKeyboardButton("🔑 Создать ключ", callback_data="adm_create"),
+        types.InlineKeyboardButton("🗑 Удалить ключ", callback_data="adm_delete"),
+        types.InlineKeyboardButton("⚙️ Изменить лимит", callback_data="adm_limit")
     )
-    await message.answer("🛠 **Админ-панель**", reply_markup=markup, parse_mode="Markdown")
+    await message.answer("🛠 **Админ-панель**\n\nКоманды:\n/freeze [ID]\n/unfreeze [ID]\n/remove_key [Имя]\n/backKey [ID]", 
+                         reply_markup=markup, parse_mode="Markdown")
 
-# --- ЛОГИКА ОПЛАТЫ (ОБНОВЛЕНА) ---
-@dp.message_handler(lambda m: m.text == "🛒 Товары")
-async def shop(message: types.Message):
-    markup = types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("🤖 Android (4$)", callback_data="pay_4"),
-        types.InlineKeyboardButton("🍎 iOS (6$)", callback_data="pay_6")
-    )
-    await message.answer("🛒 Выбери платформу:", reply_markup=markup)
+# Логика создания ключа
+@dp.callback_query_handler(lambda c: c.data == "adm_create")
+async def adm_c1(call: types.CallbackQuery):
+    await AdminStates.wait_key_name.set()
+    await call.message.answer("Введите название нового ключа:")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('pay_'))
-async def pay_link(call: types.CallbackQuery):
-    amount = int(call.data.split('_')[1])
-    # Используем новый метод для создания счета
-    inv = await crypto.create_invoice(asset='USDT', amount=amount)
-    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("💎 Оплатить", url=inv.bot_invoice_url))
-    await call.message.answer(f"Чек на {amount}$ создан. После оплаты напиши {PAYMENT_USER}", reply_markup=markup)
-
-# --- АДМИН-ФУНКЦИИ (КЛЮЧИ) ---
-@dp.callback_query_handler(lambda c: c.data == "adm_key")
-async def adm_k1(call: types.CallbackQuery):
-    await Form.key_name.set()
-    await call.message.answer("Введите название ключа:")
-
-@dp.message_handler(state=Form.key_name)
-async def adm_k2(message: types.Message, state: FSMContext):
+@dp.message_handler(state=AdminStates.wait_key_name)
+async def adm_c2(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text.strip())
-    await Form.key_days.set()
-    await message.answer("Кол-во дней подписки:")
+    await AdminStates.wait_key_days.set()
+    await message.answer("На сколько дней ключ?")
 
-@dp.message_handler(state=Form.key_days)
-async def adm_k3(message: types.Message, state: FSMContext):
-    await state.update_data(days=int(message.text))
-    await Form.key_uses.set()
-    await message.answer("Кол-во активаций:")
-
-@dp.message_handler(state=Form.key_uses)
-async def adm_k4(message: types.Message, state: FSMContext):
+@dp.message_handler(state=AdminStates.wait_key_days)
+async def adm_c3(message: types.Message, state: FSMContext):
     data = await state.get_data()
     conn = sqlite3.connect("database.db")
-    conn.execute("INSERT INTO keys (key, days, max_uses) VALUES (?, ?, ?)", 
-                 (data['name'], data['days'], int(message.text)))
+    conn.execute("INSERT INTO keys (key, days) VALUES (?, ?)", (data['name'], int(message.text)))
     conn.commit()
     conn.close()
-    await message.answer(f"✅ Ключ `{data['name']}` создан!")
+    await message.answer(f"✅ Ключ `{data['name']}` на {message.text} дн. создан!")
     await state.finish()
 
+# --- КОМАНДЫ УПРАВЛЕНИЯ (FREEZE / REMOVE) ---
+@dp.message_handler(commands=['freeze'])
+async def cmd_freeze(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    uid = message.get_args()
+    conn = sqlite3.connect("database.db")
+    conn.execute("UPDATE users SET is_frozen=1 WHERE id=?", (uid,))
+    conn.commit(); conn.close()
+    await message.answer(f"❄️ Пользователь {uid} заморожен.")
+
+@dp.message_handler(commands=['unfreeze'])
+async def cmd_unfreeze(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    uid = message.get_args()
+    conn = sqlite3.connect("database.db")
+    conn.execute("UPDATE users SET is_frozen=0 WHERE id=?", (uid,))
+    conn.commit(); conn.close()
+    await message.answer(f"🔥 Пользователь {uid} разморожен.")
+
+@dp.message_handler(commands=['remove_key', 'delkey'])
+async def cmd_remove_key(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    key_name = message.get_args()
+    conn = sqlite3.connect("database.db")
+    conn.execute("DELETE FROM keys WHERE key=?", (key_name,))
+    conn.execute("UPDATE users SET active_until=NULL, banned=1 WHERE current_key=?", (key_name,))
+    conn.commit(); conn.close()
+    await message.answer(f"🚫 Ключ `{key_name}` удален, связанные юзеры забанены.")
+
+@dp.message_handler(commands=['backKey'])
+async def cmd_back_key(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    uid = message.get_args()
+    conn = sqlite3.connect("database.db")
+    conn.execute("UPDATE users SET banned=0 WHERE id=?", (uid,))
+    conn.commit(); conn.close()
+    await message.answer(f"✅ Доступ юзеру {uid} возвращен.")
+
 # --- ПРОФИЛЬ И АКТИВАЦИЯ ---
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True).add("👤 Профиль", "🛒 Товары")
+    await message.answer("🚀 DX9WARE запущен!", reply_markup=markup)
+
 @dp.message_handler(lambda m: m.text == "👤 Профиль")
-async def user_profile(message: types.Message):
-    u = get_u(message.from_user.id, message.from_user.username)
-    status = f"✅ До `{u[2]}`" if u[2] else "❌ Нет подписки"
-    await message.answer(f"👤 **Профиль**\n🆔 ID: `{u[0]}`\nСтатус: {status}", parse_mode="Markdown")
+async def profile(message: types.Message):
+    conn = sqlite3.connect("database.db")
+    u = conn.execute("SELECT active_until, is_frozen, banned FROM users WHERE id=?", (message.from_user.id,)).fetchone()
+    conn.close()
+    if not u: status = "Нет подписки ❌"
+    elif u[2]: status = "ЗАБАНЕН 🚫"
+    elif u[1]: status = "ЗАМОРОЖЕН ❄️"
+    else: status = f"Активен до {u[0]} ✅" if u[0] else "Нет подписки ❌"
+    await message.answer(f"👤 Твой ID: `{message.from_user.id}`\nСтатус: {status}", parse_mode="Markdown")
 
 @dp.message_handler()
-async def check_activation(message: types.Message):
-    text = message.text.strip()
+async def handle_activation(message: types.Message):
+    key_text = message.text.strip()
     conn = sqlite3.connect("database.db")
     cur = conn.cursor()
-    cur.execute("SELECT * FROM keys WHERE key=?", (text,))
+    # Проверка ключа
+    cur.execute("SELECT days, max_uses, used_count FROM keys WHERE key=?", (key_text,))
     k = cur.fetchone()
-    if k:
-        if k[3] < k[2]:
-            end = (datetime.now() + timedelta(days=k[1])).strftime("%Y-%m-%d")
-            cur.execute("UPDATE users SET active_until=?, current_key=? WHERE id=?", (end, text, message.from_user.id))
-            cur.execute("UPDATE keys SET used_count=used_count+1 WHERE key=?", (text,))
-            conn.commit()
-            await message.answer(f"🚀 Подписка активирована до {end}!")
-        else:
-            await message.answer("❌ Этот ключ уже закончился.")
+    if k and k[2] < k[1]:
+        end_date = (datetime.now() + timedelta(days=k[0])).strftime("%Y-%m-%d")
+        cur.execute("INSERT OR REPLACE INTO users (id, active_until, current_key) VALUES (?, ?, ?)", 
+                    (message.from_user.id, end_date, key_text))
+        cur.execute("UPDATE keys SET used_count=used_count+1 WHERE key=?", (key_text,))
+        conn.commit()
+        await message.answer(f"✅ Успешно! Подписка до: {end_date}")
+    else:
+        await message.answer("❌ Неверный ключ или лимит исчерпан.")
     conn.close()
 
 if __name__ == '__main__':
