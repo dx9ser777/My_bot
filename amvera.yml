@@ -1,6 +1,8 @@
 meta:
   environment: python
-  tool: pip
+  toolchain:
+    name: pip
+    version: python3.10
 build:
   requirements: requirements.txt
 run:
