@@ -3,6 +3,7 @@ import random
 import string
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
@@ -32,132 +33,152 @@ def get_main_menu():
 def gen_str(prefix="DX9-", length=10):
     return prefix + ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-# --- ТОВАРЫ (ОБНОВЛЕННЫЙ ПРАЙС) ---
-@dp.message_handler(lambda m: m.text == "🛒 Товары", state='*')
-async def shop_view(message: types.Message, state: FSMContext):
-    await state.finish()
-    text = (
-        "**Apk DX9WARE 😀**\n"
-        "**Stars:**\n"
-        "7 days — 350⭐️\n"
-        "Month — 700⭐️\n"
-        "*Комиссия на вас*\n\n"
-        "**IOS😔**\n"
-        "7 days — 400⭐️\n"
-        "Month — 800⭐️\n\n"
-        "**Price on Crypto [APK]**\n"
-        "7 days — 4 USDT ☺️\n"
-        "Month — 8 USDT ☺️\n\n"
-        "**[IOS]⭐️**\n"
-        "7 days — 6 USDT ☺️\n"
-        "Month — 12 USDT ☺️\n\n"
-        "**Lifetime (Навсегда):**\n"
-        "APK — 25 USDT / 2500⭐️\n"
-        "IOS — 35 USDT / 3500⭐️\n\n"
-        "📩 Send Crypto or Stars here: @ware4"
-    )
-    await message.answer(text, parse_mode="Markdown", reply_markup=get_main_menu())
+# --- АДМИН КОМАНДЫ (НОВЫЕ) ---
 
-# --- АДМИН-ПАНЕЛЬ ---
+@dp.message_handler(commands=['aprofile'], state='*')
+async def admin_user_profile(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    
+    target_id = None
+    args = message.get_args()
+
+    # 1. Если это ответ на сообщение
+    if message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+    # 2. Если передан аргумент (ID или ник)
+    elif args:
+        if args.isdigit():
+            target_id = int(args)
+        else:
+            # Поиск по username в базе
+            clean_nick = args.replace("@", "")
+            res = supabase.table("users").select("*").eq("username", clean_nick).execute()
+            if res.data: target_id = res.data[0]['id']
+
+    if not target_id:
+        return await message.answer("⚠️ Укажите ID, ник или ответьте на сообщение пользователя.")
+
+    res = supabase.table("users").select("*").eq("id", target_id).execute()
+    if not res.data:
+        return await message.answer(f"❌ Пользователь `{target_id}` не найден в базе.")
+
+    u = res.data[0]
+    sub = u.get('active_until', 'Нет')
+    key = u.get('current_key', 'Не использовал')
+    
+    await message.answer(
+        f"📋 **ДАННЫЕ ЮЗЕРА**\n\n"
+        f"🆔 ID: `{u['id']}`\n"
+        f"👤 Nick: @{u.get('username', 'N/A')}\n"
+        f"🔑 Ключ: `{key}`\n"
+        f"📅 До: `{sub}`", parse_mode="Markdown"
+    )
+
+@dp.message_handler(commands=['allkey'])
+async def all_keys_censored(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    res = supabase.table("keys").select("*").execute()
+    if not res.data: return await message.answer("Ключей нет.")
+
+    text = "🔑 **ВСЕ КЛЮЧИ (ЦЕНЗУРА):**\n\n"
+    for k in res.data:
+        raw_key = k['key']
+        # Показываем только начало и конец ключа для безопасности
+        censored = f"{raw_key[:7]}...{raw_key[-2:]}"
+        days = "Lifetime" if k['days'] >= 90000 else f"{k['days']}д"
+        text += f"`{censored}` | {days}\n"
+    
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message_handler(commands=['clearkey'])
+async def clear_all_keys(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        # Удаляем всё из таблиц ключей и лоадера
+        supabase.table("keys").delete().neq("key", "0").execute() 
+        supabase.table("username").delete().neq("password", "0").execute()
+        await message.answer("🗑 Все ключи успешно удалены из базы данных.")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка очистки: {e}")
+
+# --- ОСТАЛЬНЫЕ ФУНКЦИИ (ТОВАРЫ, АДМИН, АКТИВАЦИЯ) ---
+
+@dp.message_handler(lambda m: m.text == "🛒 Товары", state='*')
+async def shop_start(message: types.Message, state: FSMContext):
+    await state.finish()
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("Android 🤖", callback_data="buy_android"),
+        InlineKeyboardButton("iOS 🍎", callback_data="buy_ios")
+    )
+    await message.answer("Выберите вашу платформу:", reply_markup=markup)
+
+@dp.callback_query_handler(lambda c: c.data.startswith('buy_'))
+async def platform_selected(callback: types.CallbackQuery):
+    platform = "Android" if "android" in callback.data else "iOS"
+    is_ios = "ios" in callback.data
+    
+    stars_7 = "400⭐️" if is_ios else "350⭐️"
+    stars_month = "800⭐️" if is_ios else "700⭐️"
+    crypto_7 = "6 USDT" if is_ios else "4 USDT"
+    crypto_month = "12 USDT" if is_ios else "8 USDT"
+
+    price_text = (
+        f"💳 **DX9WARE for {platform}**\n\n"
+        f"**Stars:**\n7 days — {stars_7}\nMonth — {stars_month}\n\n"
+        f"**Crypto:**\n7 days — {crypto_7}\nMonth — {crypto_month}\n\n"
+        f"📩 Покупка: @ware4"
+    )
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("Оплатить Crypto (Авто)", url="https://t.me/CryptoBot?start=pay"))
+    await callback.message.edit_text(price_text, reply_markup=markup, parse_mode="Markdown")
+
 @dp.message_handler(commands=['admin'], state='*')
-async def admin_cmd(message: types.Message, state: FSMContext):
+async def admin_panel(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
     await state.finish()
     await Form.waiting_days.set()
-    await message.answer(
-        "На сколько дней создать ключ?\n\n"
-        "Число — дни (напр. 30)\n"
-        "0 — Навсегда (Lifetime)", 
-        reply_markup=types.ReplyKeyboardRemove()
-    )
+    await message.answer("Срок ключа? (0 - Lifetime)", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message_handler(state=Form.waiting_days)
-async def process_days(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        return await message.answer("⚠️ Введите только число!")
-    
-    input_days = int(message.text)
-    # Логика вечного ключа: если 0, ставим 99999 дней
-    is_lifetime = input_days == 0
-    days = 99999 if is_lifetime else input_days
-    
+async def create_key_logic(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return
+    days = 99999 if message.text == "0" else int(message.text)
     new_key = gen_str()
-    
-    try:
-        supabase.table("keys").insert({"key": new_key, "days": days}).execute()
-        try:
-            supabase.table("username").insert({"password": new_key}).execute()
-        except: pass 
-        
-        type_text = "FOREVER (Lifetime)" if is_lifetime else f"{days} дней"
-        await message.answer(f"✅ Ключ создан: `{new_key}`\nТип: {type_text}", parse_mode="Markdown", reply_markup=get_main_menu())
-    except Exception as e:
-        await message.answer(f"❌ Ошибка базы: {e}", reply_markup=get_main_menu())
+    supabase.table("keys").insert({"key": new_key, "days": days}).execute()
+    try: supabase.table("username").insert({"password": new_key}).execute()
+    except: pass
+    await message.answer(f"✅ Ключ: `{new_key}`", parse_mode="Markdown", reply_markup=get_main_menu())
     await state.finish()
 
-# --- АКТИВАЦИЯ (ТВОЙ ТЕКСТ) ---
 @dp.message_handler(lambda m: m.text == "🔑 Активировать", state='*')
-async def act_btn(message: types.Message, state: FSMContext):
+async def activate_btn(message: types.Message, state: FSMContext):
     await state.finish()
     await Form.waiting_activation.set()
-    await message.answer("Введите ваш ключ:", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("Введите ключ:", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message_handler(state=Form.waiting_activation)
-async def act_process(message: types.Message, state: FSMContext):
+async def act_logic(message: types.Message, state: FSMContext):
     key = message.text.strip()
-    try:
-        res = supabase.table("keys").select("*").eq("key", key).execute()
-        if res.data:
-            k = res.data[0]
-            days_to_add = k['days']
-            
-            # Если ключ вечный (99999), пишем "Lifetime", иначе считаем дату
-            if days_to_add >= 90000:
-                exp = "Lifetime (Навсегда)"
-            else:
-                exp = (datetime.now() + timedelta(days=days_to_add)).strftime("%Y-%m-%d")
-            
-            supabase.table("users").update({"active_until": exp}).eq("id", message.from_user.id).execute()
-            supabase.table("keys").delete().eq("key", key).execute()
-            
-            await message.answer(
-                f"Ваш ключ \n`{key}`\nАктивирован!\nВаш айди: `{message.from_user.id}`", 
-                parse_mode="Markdown", reply_markup=get_main_menu()
-            )
-        else:
-            await message.answer("❌ Ключ не найден.", reply_markup=get_main_menu())
-    except Exception as e:
-        await message.answer(f"❌ Ошибка активации: {e}", reply_markup=get_main_menu())
+    res = supabase.table("keys").select("*").eq("key", key).execute()
+    if res.data:
+        k = res.data[0]
+        exp = "Lifetime" if k['days'] >= 90000 else (datetime.now() + timedelta(days=k['days'])).strftime("%Y-%m-%d")
+        supabase.table("users").update({"active_until": exp, "current_key": key}).eq("id", message.from_user.id).execute()
+        supabase.table("keys").delete().eq("key", key).execute()
+        await message.answer(f"Ваш ключ \n`{key}`\nАктивирован!\nВаш айди: `{message.from_user.id}`", parse_mode="Markdown", reply_markup=get_main_menu())
+    else:
+        await message.answer("❌ Ключ не найден.", reply_markup=get_main_menu())
     await state.finish()
 
-# --- ПРОФИЛЬ ---
-@dp.message_handler(lambda m: m.text == "👤 Профиль", state='*')
-async def profile_view(message: types.Message, state: FSMContext):
+@dp.message_handler(commands=['start'], state='*')
+async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
-    try:
-        r = supabase.table("users").select("*").eq("id", message.from_user.id).execute()
-        sub = r.data[0].get('active_until', 'Нет') if r.data else "Нет"
-        await message.answer(f"🆔 Ваш ID: `{message.from_user.id}`\n📅 Подписка: `{sub}`", parse_mode="Markdown")
-    except:
-        await message.answer(f"🆔 Ваш ID: `{message.from_user.id}`\n📅 Подписка: Ошибка данных")
-
-# --- СТАРТ ---
-@dp.message_handler(commands=['start', 'akey', 'delkey'], state='*')
-async def start_cmds(message: types.Message, state: FSMContext):
-    await state.finish()
-    cmd = message.get_command()
-    
-    if cmd == '/start':
-        try: supabase.table("users").upsert({"id": message.from_user.id}).execute()
-        except: pass
-        await message.answer("👋 Добро пожаловать в DX9WARE!", reply_markup=get_main_menu())
-    
-    elif cmd == '/akey':
-        if message.from_user.id != ADMIN_ID: return
-        res = supabase.table("keys").select("*").execute()
-        text = "🔑 **КЛЮЧИ:**\n\n" + "\n".join([f"`{k['key']}` ({'Lifetime' if k['days'] >= 90000 else str(k['days'])+'д'})" for k in res.data])
-        await message.answer(text if res.data else "Ключей нет.", parse_mode="Markdown")
+    # Сохраняем и ID и ник для работы /aprofile
+    supabase.table("users").upsert({"id": message.from_user.id, "username": message.from_user.username}).execute()
+    await message.answer("👋 DX9WARE готов.", reply_markup=get_main_menu())
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-                       
+    
