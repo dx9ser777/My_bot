@@ -1,3 +1,6 @@
-aiogram==2.25.1
-aiocryptopay
+aiogram
+pyrogram
+tgcrypto
+apscheduler
 supabase
+aiohttp
