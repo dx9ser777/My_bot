@@ -4,3 +4,4 @@ tgcrypto
 apscheduler
 supabase
 aiohttp
+Pillow
