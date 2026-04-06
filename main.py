@@ -11,10 +11,9 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from supabase import create_client, Client
 
-# --- КОНФИГ ---
-API_TOKEN = '8624542988:AAHDzBxDWDZdU6caOnofGqYHW4Ifk2LC5BY'
+API_TOKEN = "8624542988:AAHDzBxDWDZdU6caOnofGqYHW4Ifk2LC5BY"
 ADMIN_ID = 6332767725
-CRYPTO_PAY_TOKEN = '560149:AAdisc69jC2qejfxQvAD5y56K4Jx1oBn9f1'
+CRYPTO_PAY_TOKEN = "560149:AAdisc69jC2qejfxQvAD5y56K4Jx1oBn9f1"
 FILE_NAME = "cheat_file.zip"
 
 SUPABASE_URL = "https://yuksepnwkzffudhcrjnl.supabase.co"
@@ -27,9 +26,8 @@ SUPABASE_KEY = (
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- ЦЕНЫ ---
 PRICES_CRYPTO = {
     "apk_7": 4,
     "apk_30": 8,
@@ -51,18 +49,19 @@ class Form(StatesGroup):
     waiting_freeze_key = State()
 
 
-def gen_str(prefix="DX9-", length=10):
+def gen_str():
     chars = string.ascii_uppercase + string.digits
-    return prefix + ''.join(random.choices(chars, k=length))
+    suffix = "".join(random.choices(chars, k=10))
+    return "DX9-" + suffix
 
 
-def is_subscribed(user_data: dict) -> bool:
+def is_subscribed(user_data):
     if not user_data:
         return False
-    sub = user_data.get('active_until')
-    if not sub or sub == "Нет ❌":
+    sub = user_data.get("active_until")
+    if not sub or sub == "Net":
         return False
-    if sub == "Lifetime ♾":
+    if sub == "Lifetime":
         return True
     try:
         return datetime.strptime(sub, "%Y-%m-%d") > datetime.now()
@@ -76,48 +75,22 @@ def get_main_menu(user_id=None):
         try:
             res = supabase.table("users").select("*").eq("id", user_id).execute()
             if res.data and is_subscribed(res.data[0]):
-                markup.add("👤 Профиль")
+                markup.add("Profil")
                 return markup
         except Exception:
             pass
-    markup.add("👤 Профиль", "🔑 Активировать")
+    markup.add("Profil", "Aktivirovat klyuch")
     return markup
 
 
-# --- КРИПТО PAY ---
-async def create_invoice(amount):
-    headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
-    data = {
-        'asset': 'USDT',
-        'amount': str(amount),
-        'description': 'DX9WARE Subscription',
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            'https://pay.crypt.bot/api/createInvoice',
-            json=data,
-            headers=headers,
-        ) as resp:
-            return await resp.json()
+def calc_exp(days):
+    if days >= 90000:
+        return "Lifetime"
+    exp_date = datetime.now() + timedelta(days=days)
+    return exp_date.strftime("%Y-%m-%d")
 
 
-async def check_invoice(invoice_id):
-    headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
-    params = {'invoice_ids': str(invoice_id)}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            'https://pay.crypt.bot/api/getInvoices',
-            params=params,
-            headers=headers,
-        ) as resp:
-            res = await resp.json()
-            if res.get('ok') and res['result']['items']:
-                return res['result']['items'][0]['status'] == 'paid'
-    return False
-
-
-# --- АВТО СОЗДАНИЕ КЛЮЧА ---
-def auto_create_key(days: int, platform: str = "apk") -> str:
+def auto_create_key(days, platform="apk"):
     key = gen_str()
     supabase.table("keys").insert({
         "key": key,
@@ -132,150 +105,172 @@ def auto_create_key(days: int, platform: str = "apk") -> str:
     return key
 
 
-# ============================================================
+async def create_invoice(amount):
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+    data = {
+        "asset": "USDT",
+        "amount": str(amount),
+        "description": "DX9WARE Subscription",
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://pay.crypt.bot/api/createInvoice",
+            json=data,
+            headers=headers,
+        ) as resp:
+            return await resp.json()
+
+
+async def check_invoice(invoice_id):
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+    params = {"invoice_ids": str(invoice_id)}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://pay.crypt.bot/api/getInvoices",
+            params=params,
+            headers=headers,
+        ) as resp:
+            res = await resp.json()
+            if res.get("ok") and res["result"]["items"]:
+                return res["result"]["items"][0]["status"] == "paid"
+    return False
+
+
 # /start
-# ============================================================
-@dp.message_handler(commands=['start'], state='*')
-async def start(message: types.Message, state: FSMContext):
+@dp.message_handler(commands=["start"], state="*")
+async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
     supabase.table("users").upsert({
         "id": message.from_user.id,
         "username": message.from_user.username,
         "joined_at": datetime.now().isoformat(),
     }).execute()
-
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
-        InlineKeyboardButton("🛒 Купить ключ", callback_data="open_shop"),
-        InlineKeyboardButton("🔑 Активировать ключ", callback_data="start_activate"),
+        InlineKeyboardButton(
+            "\U0001f6d2 Kupit klyuch",
+            callback_data="open_shop",
+        ),
+        InlineKeyboardButton(
+            "\U0001f511 Aktivirovat klyuch",
+            callback_data="start_activate",
+        ),
     )
     await message.answer(
-        "💜 Добро пожаловать в магазин *dx9ware*",
+        "\U0001f49c Dobro pozhalovat v magazin dx9ware",
         reply_markup=markup,
-        parse_mode="Markdown",
     )
     await message.answer(
-        "Выберите действие:",
+        "Vyberi deystvie:",
         reply_markup=get_main_menu(message.from_user.id),
     )
 
 
-# ============================================================
-# МАГАЗИН
-# ============================================================
-@dp.callback_query_handler(lambda c: c.data == "open_shop", state='*')
+# SHOP - platform select
+@dp.callback_query_handler(lambda c: c.data == "open_shop", state="*")
 async def open_shop(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("Android 🤖", callback_data="shop_apk"),
-        InlineKeyboardButton("iOS 🍎", callback_data="shop_ios"),
+        InlineKeyboardButton("Android \U0001f916", callback_data="shop_apk"),
+        InlineKeyboardButton("iOS \U0001f34e", callback_data="shop_ios"),
     )
-    await callback.message.edit_text(
-        "🛒 *Выбери платформу:*",
-        reply_markup=markup,
-        parse_mode="Markdown",
-    )
+    await callback.message.edit_text("Vyberi platformu:", reply_markup=markup)
 
 
-@dp.callback_query_handler(lambda c: c.data in ['shop_apk', 'shop_ios'], state='*')
+@dp.callback_query_handler(lambda c: c.data in ["shop_apk", "shop_ios"], state="*")
 async def shop_platform(callback: types.CallbackQuery):
-    plat = callback.data.split('_')[1]
+    plat = callback.data.split("_")[1]
     is_ios = plat == "ios"
-    name = "iOS 🍎" if is_ios else "Android 🤖"
+    if is_ios:
+        name = "iOS"
+    else:
+        name = "Android"
     p7_c = PRICES_CRYPTO[plat + "_7"]
     p30_c = PRICES_CRYPTO[plat + "_30"]
     p7_s = PRICES_STARS[plat + "_7"]
     p30_s = PRICES_STARS[plat + "_30"]
 
+    btn1 = "7 dney - " + str(p7_c) + "$ / " + str(p7_s) + " zvezd"
+    btn2 = "30 dney - " + str(p30_c) + "$ / " + str(p30_s) + " zvezd"
+
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
-        InlineKeyboardButton(
-            "7 дней | {}$ USDT / {}⭐".format(p7_c, p7_s),
-            callback_data="choose_{}_7".format(plat),
-        ),
-        InlineKeyboardButton(
-            "30 дней | {}$ USDT / {}⭐".format(p30_c, p30_s),
-            callback_data="choose_{}_30".format(plat),
-        ),
-        InlineKeyboardButton("⬅️ Назад", callback_data="open_shop"),
+        InlineKeyboardButton(btn1, callback_data="choose_" + plat + "_7"),
+        InlineKeyboardButton(btn2, callback_data="choose_" + plat + "_30"),
+        InlineKeyboardButton("Nazad", callback_data="open_shop"),
     )
     text = (
-        "💎 *DX9WARE {}*\n\n"
-        "📦 7 дней:\n  • Крипта: {} USDT\n  • Звёзды: {}⭐\n\n"
-        "📦 30 дней:\n  • Крипта: {} USDT\n  • Звёзды: {}⭐\n\n"
-        "_Оплата крипто — авто. Звёзды — через @ware4_"
-    ).format(name, p7_c, p7_s, p30_c, p30_s)
-    await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        "DX9WARE " + name + "\n\n"
+        "7 dney: " + str(p7_c) + " USDT / " + str(p7_s) + " zvezd\n"
+        "30 dney: " + str(p30_c) + " USDT / " + str(p30_s) + " zvezd\n\n"
+        "Oplata krypto - avto. Zvezdy - cherez @ware4"
+    )
+    await callback.message.edit_text(text, reply_markup=markup)
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('choose_'), state='*')
+# SHOP - payment method
+@dp.callback_query_handler(lambda c: c.data.startswith("choose_"), state="*")
 async def choose_payment(callback: types.CallbackQuery):
-    parts = callback.data.split('_')
+    parts = callback.data.split("_")
     plat = parts[1]
     days = parts[2]
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton(
-            "💎 Оплатить криптой (авто)",
-            callback_data="buy_crypto_{}_{}".format(plat, days),
+            "Krypta (avto)",
+            callback_data="buy_crypto_" + plat + "_" + days,
         ),
         InlineKeyboardButton(
-            "⭐ Оплатить звёздами (через @ware4)",
+            "Zvezdy (cherez @ware4)",
             url="https://t.me/ware4",
         ),
-        InlineKeyboardButton("⬅️ Назад", callback_data="shop_{}".format(plat)),
+        InlineKeyboardButton("Nazad", callback_data="shop_" + plat),
     )
     await callback.message.edit_text(
-        "💳 *Выбери способ оплаты:*\n\n"
-        "• Крипта — автоматическая выдача ключа\n"
-        "• Звёзды — обратитесь к @ware4",
+        "Vyberi sposob oplaty:\n\nKrypta - avto vydacha\nZvezdy - obratites k @ware4",
         reply_markup=markup,
-        parse_mode="Markdown",
     )
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('buy_crypto_'), state='*')
+# SHOP - crypto buy
+@dp.callback_query_handler(lambda c: c.data.startswith("buy_crypto_"), state="*")
 async def process_buy_crypto(callback: types.CallbackQuery):
-    parts = callback.data.split('_')
+    parts = callback.data.split("_")
     plat = parts[2]
     days = parts[3]
-    plan_key = "{}_{}".format(plat, days)
+    plan_key = plat + "_" + days
     amount = PRICES_CRYPTO.get(plan_key, 8)
-
     res = await create_invoice(amount)
-    if res.get('ok'):
-        inv_id = res['result']['invoice_id']
+    if res.get("ok"):
+        inv_id = res["result"]["invoice_id"]
+        pay_url = res["result"]["pay_url"]
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(
-            InlineKeyboardButton("🔗 Оплатить", url=res['result']['pay_url']),
+            InlineKeyboardButton("Oplatit", url=pay_url),
             InlineKeyboardButton(
-                "✅ Проверить оплату",
-                callback_data="check_{}_{}_{}" .format(inv_id, plat, days),
+                "Proverit oplatu",
+                callback_data="check_" + str(inv_id) + "_" + plat + "_" + days,
             ),
         )
         await callback.message.answer(
-            "💰 Счёт на *{} USDT* создан.\n\nПосле оплаты нажми «Проверить».".format(amount),
+            "Schet na " + str(amount) + " USDT sozdan. Posle oplaty nazhmite Proverit.",
             reply_markup=markup,
-            parse_mode="Markdown",
         )
     else:
-        await callback.answer("❌ Ошибка создания счёта.", show_alert=True)
+        await callback.answer("Oshibka sozdaniya scheta.", show_alert=True)
 
 
-@dp.callback_query_handler(lambda c: c.data.startswith('check_'), state='*')
+# SHOP - check payment
+@dp.callback_query_handler(lambda c: c.data.startswith("check_"), state="*")
 async def process_check(callback: types.CallbackQuery):
-    parts = callback.data.split('_')
+    parts = callback.data.split("_")
     inv_id = parts[1]
     plat = parts[2]
-    days = parts[3]
-
-    if await check_invoice(inv_id):
-        new_key = auto_create_key(int(days), plat)
-        if int(days) >= 90000:
-            exp = "Lifetime ♾"
-        else:
-            exp = (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d")
-
+    days = int(parts[3])
+    paid = await check_invoice(inv_id)
+    if paid:
+        new_key = auto_create_key(days, plat)
+        exp = calc_exp(days)
         supabase.table("users").update({
             "active_until": exp,
             "current_key": new_key,
@@ -285,88 +280,69 @@ async def process_check(callback: types.CallbackQuery):
             "use_count": 1,
             "used_by": callback.from_user.id,
         }).eq("key", new_key).execute()
-
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📁 Получить файлы", callback_data="download_file"))
-        await callback.message.answer(
-            "🎉 *Оплата прошла!*\n\n🔑 Ключ: `{}`\n📅 Действует до: `{}`".format(new_key, exp),
-            reply_markup=markup,
-            parse_mode="Markdown",
+        markup.add(
+            InlineKeyboardButton("Poluchit fayly", callback_data="download_file")
         )
         await callback.message.answer(
-            "Меню обновлено:",
+            "Oplata proshla!\n\nKlyuch: " + new_key + "\nDeystviyet do: " + exp,
+            reply_markup=markup,
+        )
+        await callback.message.answer(
+            "Menyu:",
             reply_markup=get_main_menu(callback.from_user.id),
         )
     else:
-        await callback.answer("❌ Оплата не найдена. Попробуй позже.", show_alert=True)
+        await callback.answer("Oplata ne naydena. Poprobuy pozzhe.", show_alert=True)
 
 
-# ============================================================
-# АКТИВАЦИЯ КЛЮЧА
-# ============================================================
-@dp.callback_query_handler(lambda c: c.data == "start_activate", state='*')
+# ACTIVATION - inline button
+@dp.callback_query_handler(lambda c: c.data == "start_activate", state="*")
 async def start_activate_inline(callback: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await Form.waiting_activation.set()
     await callback.message.answer(
-        "🔑 *Введи свой ключ:*",
+        "Vvedi svoy klyuch:",
         reply_markup=types.ReplyKeyboardRemove(),
-        parse_mode="Markdown",
     )
 
 
-@dp.message_handler(lambda m: m.text == "🔑 Активировать", state='*')
+# ACTIVATION - keyboard button
+@dp.message_handler(lambda m: m.text == "Aktivirovat klyuch", state="*")
 async def act_start(message: types.Message, state: FSMContext):
     await state.finish()
     await Form.waiting_activation.set()
     await message.answer(
-        "🔑 *Введи свой ключ:*",
+        "Vvedi svoy klyuch:",
         reply_markup=types.ReplyKeyboardRemove(),
-        parse_mode="Markdown",
     )
 
 
+# ACTIVATION - logic
 @dp.message_handler(state=Form.waiting_activation)
 async def act_logic(message: types.Message, state: FSMContext):
-    if message.text.startswith('/'):
+    if message.text.startswith("/"):
         await state.finish()
-        await message.answer("⚠️ Отмена.", reply_markup=get_main_menu(message.from_user.id))
+        await message.answer("Otmena.", reply_markup=get_main_menu(message.from_user.id))
         return
-
     key_in = message.text.strip()
     res = supabase.table("keys").select("*").eq("key", key_in).execute()
-
     if not res.data:
-        await message.answer("❌ Неверный ключ!", reply_markup=get_main_menu(message.from_user.id))
+        await message.answer("Nevernyy klyuch!", reply_markup=get_main_menu(message.from_user.id))
         await state.finish()
         return
-
     k = res.data[0]
-
-    if k.get('frozen'):
-        await message.answer(
-            "❄️ Этот ключ заморожен.",
-            reply_markup=get_main_menu(message.from_user.id),
-        )
+    if k.get("frozen"):
+        await message.answer("Etot klyuch zamorozhen.", reply_markup=get_main_menu(message.from_user.id))
         await state.finish()
         return
-
-    max_uses = k.get('max_uses', 1)
-    use_count = k.get('use_count', 0)
-
+    max_uses = k.get("max_uses", 1)
+    use_count = k.get("use_count", 0)
     if use_count >= max_uses:
-        await message.answer(
-            "❌ Ключ уже использован.",
-            reply_markup=get_main_menu(message.from_user.id),
-        )
+        await message.answer("Klyuch uzhe ispolzovan.", reply_markup=get_main_menu(message.from_user.id))
         await state.finish()
         return
-
-    if k['days'] >= 90000:
-        exp = "Lifetime ♾"
-    else:
-        exp = (datetime.now() + timedelta(days=k['days'])).strftime("%Y-%m-%d")
-
+    exp = calc_exp(k["days"])
     supabase.table("users").update({
         "active_until": exp,
         "current_key": key_in,
@@ -376,103 +352,83 @@ async def act_logic(message: types.Message, state: FSMContext):
         "use_count": use_count + 1,
         "used_by": message.from_user.id,
     }).eq("key", key_in).execute()
-
     markup_dl = InlineKeyboardMarkup()
-    markup_dl.add(InlineKeyboardButton("📁 Получить файлы", callback_data="download_file"))
-
+    markup_dl.add(InlineKeyboardButton("Poluchit fayly", callback_data="download_file"))
     await message.answer(
-        "✅ *Активировано до:* `{}`".format(exp),
-        parse_mode="Markdown",
+        "Aktivirovano do: " + exp,
         reply_markup=get_main_menu(message.from_user.id),
     )
-    await message.answer("🚀 Скачать файлы:", reply_markup=markup_dl)
+    await message.answer("Skachat fayly:", reply_markup=markup_dl)
     await state.finish()
 
 
-# ============================================================
-# ПРОФИЛЬ
-# ============================================================
-@dp.message_handler(lambda m: m.text == "👤 Профиль", state='*')
+# PROFILE
+@dp.message_handler(lambda m: m.text == "Profil", state="*")
 async def profile_view(message: types.Message, state: FSMContext):
     await state.finish()
     res = supabase.table("users").select("*").eq("id", message.from_user.id).execute()
     if res.data:
         u = res.data[0]
-        sub = u.get('active_until', 'Нет ❌')
-        key = u.get('current_key', 'Нет')
+        sub = u.get("active_until", "Net")
+        key = u.get("current_key", "Net")
         text = (
-            "👤 *Профиль*\n\n"
-            "🆔 ID: `{}`\n"
-            "🔑 Ключ: `{}`\n"
-            "📅 Подписка до: `{}`"
-        ).format(u['id'], key, sub)
+            "Profil\n\n"
+            "ID: " + str(u["id"]) + "\n"
+            "Klyuch: " + str(key) + "\n"
+            "Podpiska do: " + str(sub)
+        )
         markup = None
         if is_subscribed(u):
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📁 Получить файлы", callback_data="download_file"))
-        await message.answer(text, reply_markup=markup, parse_mode="Markdown")
+            markup.add(InlineKeyboardButton("Poluchit fayly", callback_data="download_file"))
+        await message.answer(text, reply_markup=markup)
     else:
-        await message.answer("Профиль не найден. Напиши /start")
+        await message.answer("Profil ne nayden. Napishi /start")
 
 
-# ============================================================
-# ФАЙЛ
-# ============================================================
-@dp.callback_query_handler(lambda c: c.data == "download_file", state='*')
+# FILE
+@dp.callback_query_handler(lambda c: c.data == "download_file", state="*")
 async def send_cheat_file(callback: types.CallbackQuery):
     res = supabase.table("users").select("*").eq("id", callback.from_user.id).execute()
     if not res.data or not is_subscribed(res.data[0]):
-        await callback.answer("❌ У тебя нет активной подписки.", show_alert=True)
+        await callback.answer("Net aktivnoy podpiski.", show_alert=True)
         return
     if os.path.exists(FILE_NAME):
         await callback.message.answer_document(
             InputFile(FILE_NAME),
-            caption="🚀 *Твой файл DX9WARE готов!*",
-            parse_mode="Markdown",
+            caption="Tvoy fayl DX9WARE gotov!",
         )
     else:
-        await callback.answer("⚠️ Файл не найден. Обратитесь к @ware4", show_alert=True)
+        await callback.answer("Fayl ne nayden. Obratites k @ware4", show_alert=True)
 
 
-# ============================================================
-# НАЗАД В МАГАЗИН
-# ============================================================
-@dp.callback_query_handler(lambda c: c.data == "back_to_shop", state='*')
+# BACK TO SHOP
+@dp.callback_query_handler(lambda c: c.data == "back_to_shop", state="*")
 async def back_to_shop(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("Android 🤖", callback_data="shop_apk"),
-        InlineKeyboardButton("iOS 🍎", callback_data="shop_ios"),
+        InlineKeyboardButton("Android", callback_data="shop_apk"),
+        InlineKeyboardButton("iOS", callback_data="shop_ios"),
     )
-    await callback.message.edit_text(
-        "🛒 *Выбери платформу:*",
-        reply_markup=markup,
-        parse_mode="Markdown",
-    )
+    await callback.message.edit_text("Vyberi platformu:", reply_markup=markup)
 
 
-# ============================================================
-# АДМИН ПАНЕЛЬ — /admin
-# ============================================================
-@dp.message_handler(commands=['admin'], state='*')
+# ADMIN /admin
+@dp.message_handler(commands=["admin"], state="*")
 async def admin_panel(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await state.finish()
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🔑 Создать ключ", callback_data="adm_create_key"),
-        InlineKeyboardButton("📋 Все ключи", callback_data="adm_all_keys"),
-        InlineKeyboardButton("👥 Все пользователи", callback_data="adm_all_users"),
-        InlineKeyboardButton("❄️ Заморозить ключ", callback_data="adm_freeze"),
-        InlineKeyboardButton("♻️ Разморозить ключ", callback_data="adm_unfreeze"),
-        InlineKeyboardButton("🗑 Удалить ключ", callback_data="adm_delete"),
+        InlineKeyboardButton("Sozdat klyuch", callback_data="adm_create_key"),
+        InlineKeyboardButton("Vse klyuchi", callback_data="adm_all_keys"),
+        InlineKeyboardButton("Vse polzovateli", callback_data="adm_all_users"),
+        InlineKeyboardButton("Zamorozit", callback_data="adm_freeze"),
+        InlineKeyboardButton("Razmorozit", callback_data="adm_unfreeze"),
+        InlineKeyboardButton("Udalit klyuch", callback_data="adm_delete"),
     )
-    await message.answer(
-        "⚙️ *Панель администратора DX9WARE*",
-        reply_markup=markup,
-        parse_mode="Markdown",
-    )
+    await message.answer("Panel administratora DX9WARE", reply_markup=markup)
 
 
 @dp.callback_query_handler(lambda c: c.data == "adm_create_key")
@@ -480,9 +436,7 @@ async def adm_create_key_start(callback: types.CallbackQuery, state: FSMContext)
     if callback.from_user.id != ADMIN_ID:
         return
     await Form.waiting_days.set()
-    await callback.message.answer(
-        "На сколько дней создать ключ? (0 = Lifetime)\nОтправь число:"
-    )
+    await callback.message.answer("Na skolko dney? (0 = Lifetime):")
 
 
 @dp.message_handler(state=Form.waiting_days)
@@ -490,17 +444,17 @@ async def adm_gen_key(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await state.finish()
         return
-    if message.text.startswith('/') or not message.text.isdigit():
+    if message.text.startswith("/") or not message.text.isdigit():
         await state.finish()
-        await message.answer("⚠️ Отменено.", reply_markup=get_main_menu(message.from_user.id))
+        await message.answer("Otmeneno.")
         return
     days = 99999 if message.text == "0" else int(message.text)
     key = auto_create_key(days)
-    label = "Lifetime" if days >= 90000 else str(days)
-    await message.answer(
-        "✅ Ключ создан:\n`{}`\nДней: {}".format(key, label),
-        parse_mode="Markdown",
-    )
+    if days >= 90000:
+        label = "Lifetime"
+    else:
+        label = str(days)
+    await message.answer("Klyuch sozdan: " + key + "  Dney: " + label)
     await state.finish()
 
 
@@ -510,17 +464,26 @@ async def adm_all_keys_cb(callback: types.CallbackQuery):
         return
     res = supabase.table("keys").select("*").execute()
     if not res.data:
-        await callback.message.answer("База ключей пуста.")
+        await callback.message.answer("Baza klyuchey pusta.")
         return
-    text = "🔑 *Все ключи:*\n\n"
+    lines = ["Vse klyuchi:\n"]
     for k in res.data:
-        status = "✅" if k['is_used'] else "🆕"
-        frozen = " ❄️" if k.get('frozen') else ""
-        text += "`{}` | {}д | {}{} | {}/{}\n".format(
-            k['key'], k['days'], status, frozen,
-            k.get('use_count', 0), k.get('max_uses', 1),
+        if k["is_used"]:
+            status = "Isp"
+        else:
+            status = "Nov"
+        if k.get("frozen"):
+            frozen = " FROZEN"
+        else:
+            frozen = ""
+        line = (
+            str(k["key"]) + " | "
+            + str(k["days"]) + "d | "
+            + status + frozen + " | "
+            + str(k.get("use_count", 0)) + "/" + str(k.get("max_uses", 1))
         )
-    await callback.message.answer(text, parse_mode="Markdown")
+        lines.append(line)
+    await callback.message.answer("\n".join(lines))
 
 
 @dp.callback_query_handler(lambda c: c.data == "adm_all_users")
@@ -529,15 +492,15 @@ async def adm_all_users_cb(callback: types.CallbackQuery):
         return
     res = supabase.table("users").select("*").execute()
     if not res.data:
-        await callback.message.answer("Пользователей нет.")
+        await callback.message.answer("Polzovateley net.")
         return
-    text = "👥 *Все пользователи:*\n\n"
+    lines = ["Vse polzovateli:\n"]
     for u in res.data:
-        sub = u.get('active_until', 'Нет')
-        text += "🆔 `{}` | @{} | до: {}\n".format(
-            u['id'], u.get('username', '?'), sub
-        )
-    await callback.message.answer(text, parse_mode="Markdown")
+        sub = u.get("active_until", "Net")
+        uname = u.get("username") or "?"
+        line = "ID: " + str(u["id"]) + " | @" + uname + " | do: " + str(sub)
+        lines.append(line)
+    await callback.message.answer("\n".join(lines))
 
 
 @dp.callback_query_handler(lambda c: c.data == "adm_freeze")
@@ -546,7 +509,7 @@ async def adm_freeze_start(callback: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(freeze_action="freeze")
     await Form.waiting_freeze_key.set()
-    await callback.message.answer("Введи ключ для заморозки:")
+    await callback.message.answer("Vvedi klyuch dlya zamorozki:")
 
 
 @dp.callback_query_handler(lambda c: c.data == "adm_unfreeze")
@@ -555,7 +518,7 @@ async def adm_unfreeze_start(callback: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(freeze_action="unfreeze")
     await Form.waiting_freeze_key.set()
-    await callback.message.answer("Введи ключ для разморозки:")
+    await callback.message.answer("Vvedi klyuch dlya razmorozki:")
 
 
 @dp.message_handler(state=Form.waiting_freeze_key)
@@ -564,13 +527,62 @@ async def adm_freeze_logic(message: types.Message, state: FSMContext):
         await state.finish()
         return
     data = await state.get_data()
-    action = data.get('freeze_action', 'freeze')
+    action = data.get("freeze_action", "freeze")
     key = message.text.strip()
     frozen_val = action != "unfreeze"
     supabase.table("keys").update({"frozen": frozen_val}).eq("key", key).execute()
-    word = "заморожен ❄️" if frozen_val else "разморожен ♻️"
-    await message.answer("`{}` {}".format(key, word), parse_mode="Markdown")
+    if frozen_val:
+        word = "zamorozhen"
+    else:
+        word = "razmorozhen"
+    await message.answer("Klyuch " + key + " " + word + ".")
     await state.finish()
 
 
-@dp.ca
+@dp.callback_query_handler(lambda c: c.data == "adm_delete")
+async def adm_delete_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await Form.waiting_delete_key.set()
+    await callback.message.answer("Vvedi klyuch dlya udaleniya:")
+
+
+@dp.message_handler(state=Form.waiting_delete_key)
+async def adm_delete_logic(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.finish()
+        return
+    key = message.text.strip()
+    supabase.table("keys").delete().eq("key", key).execute()
+    await message.answer("Klyuch " + key + " udalyon.")
+    await state.finish()
+
+
+# TEXT ADMIN COMMANDS
+@dp.message_handler(commands=["akey"], state="*")
+async def cmd_akey(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.finish()
+    res = supabase.table("keys").select("*").execute()
+    if not res.data:
+        await message.answer("Baza pusta.")
+        return
+    lines = ["Vse klyuchi (bez tsenzury):\n"]
+    for k in res.data:
+        if k["is_used"]:
+            status = "Isp"
+        else:
+            status = "Nov"
+        if k.get("frozen"):
+            frozen = " FROZEN"
+        else:
+            frozen = ""
+        line = (
+            str(k["key"]) + " | "
+            + str(k["days"]) + "d | "
+            + status + frozen + " | "
+            + str(k.get("use_count", 0)) + "/" + str(k.get("max_uses", 1))
+        )
+        lines.append(line)
+    await m
