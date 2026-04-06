@@ -2,17 +2,17 @@ import logging
 import random
 import string
 import asyncio
+import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiocryptopay import AioCryptoPay
 from supabase import create_client, Client
 
-# --- КОНФИГ ---
+# --- КОНФИГ (НОВЫЕ ТОКЕНЫ) ---
 API_TOKEN = '8607818846:AAEjGMfOMw8JmUsXu8Zj5mUdzfP1RylLVjU'
-CRYPTO_TOKEN = '560149:AAdisc69jC2qejfxQvAD5y56K4Jx1oBn9f1'
+CRYPTO_PAY_TOKEN = '560149:AAdisc69jC2qejfxQvAD5y56K4Jx1oBn9f1'
 ADMIN_ID = 6332767725 
 
 SUPABASE_URL = "https://yuksepnwkzffudhcrjnl.supabase.co"
@@ -22,7 +22,6 @@ logging.basicConfig(level=logging.INFO)
 storage = MemoryStorage()
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=storage)
-crypto = AioCryptoPay(token=CRYPTO_TOKEN, network='main')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 class AdminStates(StatesGroup):
@@ -32,10 +31,27 @@ class AdminStates(StatesGroup):
 def gen_str(prefix="DX9-", length=10):
     return prefix + ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-# --- ГЛАВНОЕ МЕНЮ ---
+# --- ЛОГИКА CRYPTO BOT (ИЗ ТВОЕГО СТАРОГО КОДА) ---
+async def create_invoice(amount):
+    headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
+    data = {'asset': 'USDT', 'amount': str(amount), 'description': 'DX9WARE Subscription'}
+    async with aiohttp.ClientSession() as session:
+        async with session.post('https://pay.crypt.bot/api/createInvoice', json=data, headers=headers) as resp:
+            return await resp.json()
+
+async def check_invoice(invoice_id):
+    headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
+    async with aiohttp.ClientSession() as session:
+        params = {'invoice_ids': str(invoice_id)}
+        async with session.get('https://pay.crypt.bot/api/getInvoices', params=params, headers=headers) as resp:
+            res = await resp.json()
+            if res['ok'] and res['result']['items']:
+                return res['result']['items'][0]['status'] == 'paid'
+    return False
+
+# --- МЕНЮ ---
 @dp.message_handler(commands=['start'])
 async def start_cmd(message: types.Message):
-    # Регистрируем пользователя в таблице users
     supabase.table("users").upsert({"id": message.from_user.id}).execute()
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add("👤 Профиль", "🛒 Товары", "🔑 Активировать", "🎁 Промо")
@@ -53,141 +69,126 @@ async def shop_os(message: types.Message):
 async def shop_prices(call: types.CallbackQuery):
     os = call.data.split('_')[1]
     is_apk = os == "apk"
-    
-    # Цены на звезды и крипту
     text = (
         f"--- {os.upper()} DX9WARE ---\n\n"
-        f"Цены в Stars (Писать @ware4):\n"
-        f"7 Days: {350 if is_apk else 400} Stars\n"
-        f"Month: {700 if is_apk else 800} Stars\n\n"
-        f"Цены в Crypto (Автоматически):\n"
-        f"7 Days: {4 if is_apk else 6} USDT\n"
-        f"Month: {8 if is_apk else 12} USDT\n\n"
-        f"Комиссия на вас."
+        f"Stars (Писать @ware4):\n7 Days: {350 if is_apk else 400} ⭐\nMonth: {700 if is_apk else 800} ⭐\n\n"
+        f"Crypto (Автоматически):\n7 Days: {4 if is_apk else 6} USDT\nMonth: {8 if is_apk else 12} USDT"
     )
-    
     markup = types.InlineKeyboardMarkup(row_width=2)
     p7, p30 = (4, 8) if is_apk else (6, 12)
-    markup.add(types.InlineKeyboardButton(f"Купить 7 Дней ({p7}$)", callback_data=f"buy_7_{p7}"),
+    markup.add(types.InlineKeyboardButton(f"Купить 7 Дн. ({p7}$)", callback_data=f"buy_7_{p7}"),
                types.InlineKeyboardButton(f"Купить Месяц ({p30}$)", callback_data=f"buy_30_{p30}"))
     await call.message.edit_text(text, reply_markup=markup)
 
+# --- ОПЛАТА ---
+@dp.callback_query_handler(lambda c: c.data.startswith('buy_'))
+async def process_buy(call: types.CallbackQuery):
+    _, days, price = call.data.split('_')
+    res = await create_invoice(price)
+    if res['ok']:
+        markup = types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("🔗 Оплатить", url=res['result']['pay_url']),
+            types.InlineKeyboardButton("✅ Проверить", callback_data=f"chk_{res['result']['invoice_id']}_{days}")
+        )
+        await call.message.answer(f"Счет на {price} USDT создан:", reply_markup=markup)
+
+@dp.callback_query_handler(lambda c: c.data.startswith('chk_'))
+async def process_check(call: types.CallbackQuery):
+    _, inv_id, days = call.data.split('_')
+    if await check_invoice(inv_id):
+        nk = gen_str()
+        supabase.table("keys").insert({"key": nk, "days": int(days), "max_uses": 1, "is_active": True}).execute()
+        await call.message.answer(f"✅ Оплата принята! Ваш ключ:\n`{nk}`", parse_mode="Markdown")
+    else:
+        await call.answer("❌ Оплата не найдена", show_alert=True)
+
 # --- ПРОФИЛЬ И АКТИВАЦИЯ ---
 @dp.message_handler(lambda m: m.text in ["👤 Профиль", "🔑 Активировать"])
-async def handle_menu(message: types.Message):
+async def menu_h(message: types.Message):
     if message.text == "👤 Профиль":
         r = supabase.table("users").select("*").eq("id", message.from_user.id).execute()
         u = r.data[0] if r.data else {}
-        # Показываем данные из таблицы users
-        sub = u.get('active_until') or "Нет подписки"
-        key = u.get('current_key') or "Нет ключа"
-        await message.answer(f"--- ПРОФИЛЬ ---\n\nID: {message.from_user.id}\nДо: {sub}\nКлюч: {key}")
+        await message.answer(f"ID: {message.from_user.id}\nПодписка до: {u.get('active_until') or 'Нет'}\nКлюч: {u.get('current_key') or 'Нет'}")
     elif message.text == "🔑 Активировать":
         await AdminStates.waiting_activation.set()
         await message.answer("Введите ключ:")
 
 @dp.message_handler(state=AdminStates.waiting_activation)
-async def process_activation(message: types.Message, state: FSMContext):
+async def act_key(message: types.Message, state: FSMContext):
     key = message.text.strip()
-    r = supabase.table("keys").select("*").eq("key", key).execute() # Проверка в keys
+    r = supabase.table("keys").select("*").eq("key", key).execute()
     if r.data and r.data[0]['is_active'] and r.data[0]['used_count'] < r.data[0]['max_uses']:
         exp = (datetime.now() + timedelta(days=r.data[0]['days'])).strftime("%Y-%m-%d")
         supabase.table("users").upsert({"id": message.from_user.id, "active_until": exp, "current_key": key}).execute()
         supabase.table("keys").update({"used_count": r.data[0]['used_count'] + 1}).eq("key", key).execute()
-        await message.answer(f"Успешно! Подписка до: {exp}")
+        await message.answer(f"✅ Активировано до {exp}")
     else:
-        await message.answer("Ключ не найден или уже использован.")
+        await message.answer("❌ Ключ недействителен.")
     await state.finish()
 
-# --- АДМИНИСТРИРОВАНИЕ ---
-
+# --- АДМИН КОМАНДЫ ---
 @dp.message_handler(commands=['admin'])
-async def admin_panel(message: types.Message):
+async def adm_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("Создать ключ", callback_data="adm_gen"),
-               types.InlineKeyboardButton("Список всех ключей", callback_data="adm_all"))
-    await message.answer("Панель управления:", reply_markup=markup)
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("➕ Создать ключ", callback_data="adm_gen"))
+    await message.answer("Админ-панель:", reply_markup=markup)
 
 @dp.callback_query_handler(lambda c: c.data == "adm_gen")
-async def adm_gen_start(call: types.CallbackQuery):
+async def adm_gen(call: types.CallbackQuery):
     await AdminStates.waiting_days.set()
-    await call.message.answer("На сколько дней создать ключ?")
+    await call.message.answer("На сколько дней?")
 
 @dp.message_handler(state=AdminStates.waiting_days)
-async def adm_gen_end(message: types.Message, state: FSMContext):
+async def adm_gen_final(message: types.Message, state: FSMContext):
     days = int(message.text) if message.text.isdigit() else 7
-    new_key = gen_str()
-    # Добавляем ключ в таблицу keys
-    supabase.table("keys").insert({"key": new_key, "days": days, "max_uses": 1, "is_active": True}).execute()
-    await message.answer(f"Ключ на {days} дн. создан:\n`{new_key}`", parse_mode="Markdown")
+    nk = gen_str()
+    supabase.table("keys").insert({"key": nk, "days": days, "max_uses": 1, "is_active": True}).execute()
+    await message.answer(f"Ключ создан: `{nk}`", parse_mode="Markdown")
     await state.finish()
 
-# Команды для чатов и админки
 @dp.message_handler(commands=['Akey', 'Allkey'])
-async def show_all_keys(message: types.Message):
+async def keys_list(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     res = supabase.table("keys").select("*").execute()
     text = "СПИСОК КЛЮЧЕЙ:\n\n"
     for k in res.data:
-        # /Akey без цензуры, /Allkey с цензурой
-        display_key = k['key'] if message.get_command() == '/Akey' else f"{k['key'][:5]}***"
-        status = "✅" if k['is_active'] else "❄️"
-        text += f"{status} {display_key} | {k['days']}д | {k['used_count']}/{k['max_uses']}\n"
-    await message.answer(text if res.data else "Ключей нет.")
-
-@dp.message_handler(commands=['Aprofile'])
-async def aprofile_cmd(message: types.Message):
-    target_id = message.from_user.id
-    if message.reply_to_message: target_id = message.reply_to_message.from_user.id
-    elif message.get_args().isdigit(): target_id = int(message.get_args())
-    
-    res = supabase.table("users").select("*").eq("id", target_id).execute()
-    if not res.data:
-        await message.answer(f"ID: {target_id}\nСтатус: Нет данных")
-    else:
-        u = res.data[0]
-        await message.answer(f"ID: {target_id}\nДо: {u.get('active_until')}\nKey: {u.get('current_key')}")
+        # Инфо об использовании
+        user_res = supabase.table("users").select("id").eq("current_key", k['key']).execute()
+        user_info = f"Юзер: {user_res.data[0]['id']}" if user_res.data else "Не активен"
+        
+        # /Akey - без цензуры, /Allkey - с цензурой
+        key_display = k['key'] if message.get_command() == '/Akey' else f"{k['key'][:5]}***"
+        text += f"{'✅' if k['is_active'] else '❄️'} {key_display} | {k['days']}д | {user_info}\n"
+    await message.answer(text if res.data else "Пусто.")
 
 @dp.message_handler(commands=['freeze', 'unfreeze', 'Delkey', 'remove', 'backkey'])
-async def manage_cmds(message: types.Message):
+async def mng_keys(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     cmd, key = message.get_command(), message.get_args()
     if not key: return
     
     if cmd == '/freeze':
         supabase.table("keys").update({"is_active": False}).eq("key", key).execute()
-        await message.answer(f"Ключ {key} заморожен.")
+        await message.answer(f"❄️ {key} заморожен")
     elif cmd in ['/unfreeze', '/backkey']:
         supabase.table("keys").update({"is_active": True}).eq("key", key).execute()
-        await message.answer(f"Ключ {key} разморожен.")
+        await message.answer(f"☀️ {key} активен")
     elif cmd in ['/Delkey', '/remove']:
         supabase.table("keys").delete().eq("key", key).execute()
         supabase.table("users").update({"active_until": None, "current_key": None}).eq("current_key", key).execute()
-        await message.answer(f"Ключ {key} и его подписки удалены.")
+        await message.answer(f"🗑 {key} удален")
 
-# --- ОПЛАТА ---
-@dp.callback_query_handler(lambda c: c.data.startswith('buy_'))
-async def create_invoice(call: types.CallbackQuery):
-    _, days, price = call.data.split('_')
-    inv = await crypto.create_invoice(asset='USDT', amount=float(price))
-    markup = types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("Оплатить USDT", url=inv.pay_url),
-        types.InlineKeyboardButton("Проверить транзакцию", callback_data=f"chk_{inv.invoice_id}_{days}")
-    )
-    await call.message.answer(f"Счет на {price} USDT ({days} дн.) создан.", reply_markup=markup)
-
-@dp.callback_query_handler(lambda c: c.data.startswith('chk_'))
-async def check_invoice(call: types.CallbackQuery):
-    _, inv_id, days = call.data.split('_')
-    invoices = await crypto.get_invoices(invoice_ids=int(inv_id))
-    if invoices and invoices.status == 'paid':
-        nk = gen_str()
-        supabase.table("keys").insert({"key": nk, "days": int(days), "max_uses": 1, "is_active": True}).execute()
-        await call.message.answer(f"Оплата принята! Ваш ключ на {days} дней:\n`{nk}`", parse_mode="Markdown")
-    else:
-        await call.answer("Оплата не найдена.", show_alert=True)
+@dp.message_handler(commands=['Aprofile'])
+async def aprf(message: types.Message):
+    tid = message.from_user.id
+    if message.reply_to_message: tid = message.reply_to_message.from_user.id
+    elif message.get_args().isdigit(): tid = int(message.get_args())
+    r = supabase.table("users").select("*").eq("id", tid).execute()
+    if r.data:
+        u = r.data[0]
+        await message.answer(f"ID: {tid}\nДо: {u.get('active_until')}\nKey: {u.get('current_key')}")
+    else: await message.answer("Нет данных.")
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-    
+                                       
