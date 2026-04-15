@@ -1,7 +1,2 @@
 aiogram==2.25.1
-pyrogram
-tgcrypto
-apscheduler
-supabase
-aiohttp
 Pillow
